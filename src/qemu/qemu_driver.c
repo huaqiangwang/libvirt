@@ -20313,6 +20313,53 @@ qemuDomainGetStatsPerf(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
     return ret;
 }
 
+static int
+qemuDomainGetStatsResctrl(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+                          virDomainObjPtr vm,
+                          virDomainStatsRecordPtr record,
+                          int *maxparams,
+                          unsigned int privflags ATTRIBUTE_UNUSED)
+{
+    size_t i;
+    unsigned int llc_occu;
+    unsigned int llc_occu_total = 0;
+    int ret = -1;
+#define DOMAIN_STATE_STR_RESCTRL "resctrl"
+
+    for (i = 0; i < vm->def->ncachetunes; i++) {
+        virDomainCachetuneDefPtr ct = vm->def->cachetunes[i];
+
+        if (virResctrlMonIsRunning(ct->mon)) {
+            VIR_DEBUG("llc_occupancy: checking cachetune [%ld] ", i);
+            if (virResctrlMonGetCacheOccupancy(ct->mon, &llc_occu) < 0)
+                goto cleanup;
+            llc_occu_total += llc_occu;
+        }
+    }
+
+    if (vm->def->resctrlmon_noalloc &&
+            virResctrlMonIsRunning(vm->def->resctrlmon_noalloc)) {
+        VIR_DEBUG("llc_occupancy: checking resctrl vcpu-rest");
+        if (virResctrlMonGetCacheOccupancy(
+                    vm->def->resctrlmon_noalloc, &llc_occu) < 0)
+            goto cleanup;
+        llc_occu_total += llc_occu;
+    }
+
+    if (virTypedParamsAddInt(&record->params,
+                &record->nparams,
+                maxparams,
+                DOMAIN_STATE_STR_RESCTRL
+                ".cmt",
+                llc_occu_total) < 0) {
+        goto cleanup;
+    }
+
+    ret = 0;
+ cleanup:
+    return ret;
+}
+
 typedef int
 (*qemuDomainGetStatsFunc)(virQEMUDriverPtr driver,
                           virDomainObjPtr dom,
@@ -20334,6 +20381,7 @@ static struct qemuDomainGetStatsWorker qemuDomainGetStatsWorkers[] = {
     { qemuDomainGetStatsInterface, VIR_DOMAIN_STATS_INTERFACE, false },
     { qemuDomainGetStatsBlock, VIR_DOMAIN_STATS_BLOCK, true },
     { qemuDomainGetStatsPerf, VIR_DOMAIN_STATS_PERF, false },
+    { qemuDomainGetStatsResctrl, VIR_DOMAIN_STATS_RESCTRL, false },
     { NULL, 0, false }
 };
 
