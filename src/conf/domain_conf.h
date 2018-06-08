@@ -2234,6 +2234,7 @@ typedef virDomainCachetuneDef *virDomainCachetuneDefPtr;
 struct _virDomainCachetuneDef {
     virBitmapPtr vcpus;
     virResctrlAllocPtr alloc;
+    virResctrlMonPtr mon;
 };
 
 
@@ -2388,6 +2389,8 @@ struct _virDomainDef {
     virDomainIOThreadIDDefPtr *iothreadids;
 
     virDomainCputune cputune;
+
+    virResctrlMonPtr resctrlmon_noalloc;
 
     virDomainCachetuneDefPtr *cachetunes;
     size_t ncachetunes;

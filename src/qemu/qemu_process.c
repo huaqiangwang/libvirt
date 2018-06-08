@@ -2461,6 +2461,11 @@ qemuProcessResctrlCreate(virQEMUDriverPtr driver,
                                   vm->def->cachetunes[i]->alloc,
                                   priv->machineName) < 0)
             goto cleanup;
+
+        if (virResctrlMonCreate(vm->def->cachetunes[i]->alloc,
+                    vm->def->cachetunes[i]->mon,
+                    priv->machineName) < 0)
+            goto cleanup;
     }
 
     ret = 0;
@@ -5259,6 +5264,7 @@ qemuProcessSetupVcpu(virDomainObjPtr vm,
                             &vcpu->sched) < 0)
         return -1;
 
+    
     for (i = 0; i < vm->def->ncachetunes; i++) {
         virDomainCachetuneDefPtr ct = vm->def->cachetunes[i];
 
@@ -5279,6 +5285,10 @@ qemuProcessSetupVcpus(virDomainObjPtr vm)
     virDomainVcpuDefPtr vcpu;
     unsigned int maxvcpus = virDomainDefGetVcpusMax(vm->def);
     size_t i;
+    virBitmapPtr vcpuleft = NULL;
+    int ret = -1;
+
+    qemuDomainObjPrivatePtr priv = vm->privateData;
 
     if ((vm->def->cputune.period || vm->def->cputune.quota) &&
         !virCgroupHasController(((qemuDomainObjPrivatePtr) vm->privateData)->cgroup,
@@ -5308,17 +5318,52 @@ qemuProcessSetupVcpus(virDomainObjPtr vm)
         return 0;
     }
 
+    /* To monitor whole domain's cache occupancy information
+     * create mon group for un-covered VCPUs */
+    if (!(vcpuleft = virBitmapNew(maxvcpus + 1)))
+        goto cleanup;
+
+    virBitmapClearAll(vcpuleft);
+
     for (i = 0; i < maxvcpus; i++) {
         vcpu = virDomainDefGetVcpu(vm->def, i);
 
         if (!vcpu->online)
             continue;
 
+	if ( virBitmapSetBit(vcpuleft, i) < 0)
+		goto cleanup;
+
         if (qemuProcessSetupVcpu(vm, i) < 0)
             return -1;
     }
 
-    return 0;
+    for (i = 0; i < vm->def->ncachetunes; i++) {
+        virDomainCachetuneDefPtr ct = vm->def->cachetunes[i];
+        virBitmapSubtract(vcpuleft, ct->vcpus);
+    }
+
+
+    if (vm->def->ncachetunes &&
+		    !virBitmapIsAllClear(vcpuleft)){
+
+	    if (virResctrlMonCreate(NULL, vm->def->resctrlmon_noalloc, priv->machineName) < 0)
+		    goto cleanup;
+
+	    for (i = 0; i < maxvcpus; i++) {
+		    if (virBitmapIsBitSet(vcpuleft, i)){
+			    pid_t vcpupid = qemuDomainGetVcpuPid(vm, i);
+
+			    if (virResctrlMonAddPID(vm->def->resctrlmon_noalloc, vcpupid) < 0)
+				    goto cleanup;
+		    }
+	    }
+    }
+
+    ret = 0;
+cleanup:
+    virBitmapFree(vcpuleft);
+    return ret;
 }
 
 
@@ -6895,8 +6940,14 @@ void qemuProcessStop(virQEMUDriverPtr driver,
     /* Remove resctrl allocation after cgroups are cleaned up which makes it
      * kind of safer (although removing the allocation should work even with
      * pids in tasks file */
-    for (i = 0; i < vm->def->ncachetunes; i++)
+    for (i = 0; i < vm->def->ncachetunes; i++){
         virResctrlAllocRemove(vm->def->cachetunes[i]->alloc);
+        virResctrlMonRemove(vm->def->cachetunes[i]->mon);
+    }
+
+    if(vm->def->resctrlmon_noalloc)
+        virResctrlMonRemove(vm->def->resctrlmon_noalloc);
+
 
     qemuProcessRemoveDomainStatus(driver, vm);
 
@@ -7620,7 +7671,17 @@ qemuProcessReconnect(void *opaque)
         if (virResctrlAllocDeterminePath(obj->def->cachetunes[i]->alloc,
                                          priv->machineName) < 0)
             goto error;
+
+        if (virResctrlMonDeterminePath(obj->def->cachetunes[i]->mon,
+                    priv->machineName) < 0)
+            goto error;
+
     }
+
+    if(obj->def->resctrlmon_noalloc &&
+            virResctrlMonDeterminePath(obj->def->resctrlmon_noalloc,
+                priv->machineName) < 0)
+        goto error;
 
     /* update domain state XML with possibly updated state in virDomainObj */
     if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir, obj, driver->caps) < 0)

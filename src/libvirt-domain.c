@@ -12154,3 +12154,84 @@ int virDomainSetLifecycleAction(virDomainPtr domain,
     virDispatchError(domain->conn);
     return -1;
 }
+
+
+/**
+ * virDomainSetResctrlMon:
+ * @domain: a domain object
+ * @enable: true(non-zero) for enbling resctrl mon group.
+ * @disable: true(non-zero) for disbling resctrl mon group.
+ * valid if @enable is false
+ *
+ * Enable or disable resctrl monitoring.
+ *
+ * Returns -1 in case of failure, 0 in case of success.
+ */
+int
+virDomainSetResctrlMon(virDomainPtr domain,
+        int enable, int disable)
+{
+    int ret;
+    virConnectPtr conn;
+
+    virResetLastError();
+
+    if(!disable && !enable)
+        return 0;
+
+    virCheckDomainReturn(domain, -1);
+
+    conn = domain->conn;
+
+    if (conn->driver->domainSetResctrlMon) {
+        ret = conn->driver->domainSetResctrlMon(domain,
+                enable, disable);
+        if (ret < 0)
+            goto error;
+        return ret;
+    }
+
+    virReportUnsupportedError();
+
+ error:
+    virDispatchError(domain->conn);
+    return -1;
+}
+
+
+/**
+ * virDomainGetResctrlMonSts:
+ * @domain: a domain object
+ * @status: pointer of a string buffer for holding resctrl mon
+ * group status string, caller is responsible for free it.
+ *
+ * Get domain resctrl status.
+ *
+ * Returns -1 in case of failure, 0 in case of success.
+ */
+int
+virDomainGetResctrlMonSts(virDomainPtr domain,
+        char **status)
+{
+	int ret = -1;
+    virConnectPtr conn;
+
+    virResetLastError();
+
+    virCheckDomainReturn(domain, -1);
+
+    conn = domain->conn;
+
+	if (conn->driver->domainGetResctrlMonSts) {
+		*status = conn->driver->domainGetResctrlMonSts(domain);
+		if (*status)
+			ret = 0;
+
+		goto done;
+	}
+
+    virReportUnsupportedError();
+ done:
+    virDispatchError(domain->conn);
+	return ret;
+}

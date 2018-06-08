@@ -7677,6 +7677,74 @@ cmdIOThreadDel(vshControl *ctl, const vshCmd *cmd)
     return ret;
 }
 
+static const vshCmdInfo info_resctrl[] = {
+    {.name = "help",
+     .data = N_("get or set hardware CPU resource monitoring functions")
+    },
+    {.name = "desc",
+     .data = N_("Enable or disable resctrl monitoring for a guest domain.\n"
+                "    To get resctrl status use following"
+                "    command: \n\n"
+                "    virsh # resctrl <domain>")
+    },
+    {.name = NULL}
+};
+
+static const vshCmdOptDef opts_resctrl[] = {
+    VIRSH_COMMON_OPT_DOMAIN_FULL(VIR_CONNECT_LIST_DOMAINS_ACTIVE),
+    {.name = "enable",
+     .type = VSH_OT_BOOL,
+     .help = N_("Enable resctrl function such as monitoring cache occupancy "
+             "or memory bandwidth.")
+    },
+    {.name = "disable",
+     .type = VSH_OT_BOOL,
+     .help = N_("Disable hardware function such as monitoring cache occupancy "
+             "or memory bandwidth.")
+    },
+    {.name = NULL}
+};
+
+
+static bool
+cmdResctrl(vshControl *ctl, const vshCmd *cmd)
+{
+    virDomainPtr dom;
+    bool ret = false;
+    char *ressts = NULL;
+
+    bool enable = vshCommandOptBool(cmd, "enable");
+    bool disable= vshCommandOptBool(cmd, "disable");
+
+    if (!(dom = virshCommandOptDomain(ctl, cmd, NULL)))
+        return false;
+
+    if(!enable && !disable){
+        if (virDomainGetResctrlMonSts(dom, &ressts) < 0)
+            goto cleanup;
+
+        if (!ressts)
+            goto cleanup;
+
+    } else {
+        if (virDomainSetResctrlMon(dom, enable, disable) < 0)
+            goto cleanup;
+
+        if (virDomainGetResctrlMonSts(dom, &ressts) < 0)
+            goto cleanup;
+
+        if (!ressts)
+            goto cleanup;
+    }
+
+    vshPrint(ctl,"RDT Monitoring Status: %s\n", ressts);
+    ret = true;
+cleanup:
+    VIR_FREE(ressts);
+    virshDomainFree(dom);
+    return ret;
+}
+
 /*
  * "cpu-stats" command
  */
@@ -13799,6 +13867,12 @@ const vshCmdDef domManagementCmds[] = {
      .flags = 0
     },
 #endif
+    {.name = "resctrl",
+     .handler = cmdResctrl,
+     .opts = opts_resctrl,
+     .info = info_resctrl,
+     .flags = 0
+    },
     {.name = "cpu-stats",
      .handler = cmdCPUStats,
      .opts = opts_cpu_stats,

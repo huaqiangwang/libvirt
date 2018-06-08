@@ -1309,6 +1309,12 @@ typedef int
                                   unsigned int action,
                                   unsigned int flags);
 
+typedef int
+(*virDrvDomainSetResctrlMon)(virDomainPtr domain,
+                             int enable, int disable);
+
+typedef char *
+(*virDrvDomainGetResctrlMonSts)(virDomainPtr domain);
 
 typedef struct _virHypervisorDriver virHypervisorDriver;
 typedef virHypervisorDriver *virHypervisorDriverPtr;
@@ -1558,6 +1564,8 @@ struct _virHypervisorDriver {
     virDrvDomainSetLifecycleAction domainSetLifecycleAction;
     virDrvConnectCompareHypervisorCPU connectCompareHypervisorCPU;
     virDrvConnectBaselineHypervisorCPU connectBaselineHypervisorCPU;
+    virDrvDomainSetResctrlMon  domainSetResctrlMon;
+    virDrvDomainGetResctrlMonSts  domainGetResctrlMonSts;
 };
 
 

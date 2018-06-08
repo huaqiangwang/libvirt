@@ -18885,6 +18885,7 @@ virDomainCachetuneDefParse(virDomainDefPtr def,
     xmlNodePtr *nodes = NULL;
     virBitmapPtr vcpus = NULL;
     virResctrlAllocPtr alloc = virResctrlAllocNew();
+    virResctrlMonPtr mon= virResctrlMonNew();
     virDomainCachetuneDefPtr tmp_cachetune = NULL;
     char *tmp = NULL;
     char *vcpus_str = NULL;
@@ -18896,6 +18897,9 @@ virDomainCachetuneDefParse(virDomainDefPtr def,
     ctxt->node = node;
 
     if (!alloc)
+        goto cleanup;
+
+    if (!mon)
         goto cleanup;
 
     if (VIR_ALLOC(tmp_cachetune) < 0)
@@ -18970,8 +18974,12 @@ virDomainCachetuneDefParse(virDomainDefPtr def,
     if (virResctrlAllocSetID(alloc, alloc_id) < 0)
         goto cleanup;
 
+    if (virResctrlMonSetID(mon, alloc_id) < 0)
+        goto cleanup;
+
     VIR_STEAL_PTR(tmp_cachetune->vcpus, vcpus);
     VIR_STEAL_PTR(tmp_cachetune->alloc, alloc);
+    VIR_STEAL_PTR(tmp_cachetune->mon, mon);
 
     if (VIR_APPEND_ELEMENT(def->cachetunes, def->ncachetunes, tmp_cachetune) < 0)
         goto cleanup;
@@ -18987,6 +18995,20 @@ virDomainCachetuneDefParse(virDomainDefPtr def,
     VIR_FREE(nodes);
     VIR_FREE(tmp);
     return ret;
+}
+
+
+static int
+virDomainResctrlDefParse(virDomainDefPtr def,
+        xmlXPathContextPtr ctxr ATTRIBUTE_UNUSED)
+{
+    virResctrlMonPtr mon= virResctrlMonNew();
+    if (virResctrlMonSetID(mon, "vcpu-rest") < 0)
+        return -1;
+
+    def->resctrlmon_noalloc = mon;
+
+    return 0;
 }
 
 
@@ -19584,6 +19606,12 @@ virDomainDefParseXML(xmlDocPtr xml,
             goto error;
     }
     VIR_FREE(nodes);
+
+    if (virDomainResctrlDefParse(def, ctxt) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                _("cannot extract resctrl"));
+        goto error;
+    }
 
     if (virCPUDefParseXML(ctxt, "./cpu[1]", VIR_CPU_TYPE_GUEST, &def->cpu) < 0)
         goto error;

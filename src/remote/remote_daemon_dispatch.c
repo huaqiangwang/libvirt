@@ -7107,3 +7107,48 @@ remoteSerializeDomainDiskErrors(virDomainDiskErrorPtr errors,
     }
     return -1;
 }
+
+static int remoteDispatchDomainGetResctrlMonSts(
+    virNetServerPtr server ATTRIBUTE_UNUSED,
+    virNetServerClientPtr client,
+    virNetMessagePtr msg ATTRIBUTE_UNUSED,
+    virNetMessageErrorPtr rerr,
+    remote_domain_get_resctrl_mon_sts_args *args,
+    remote_domain_get_resctrl_mon_sts_ret *ret)
+{
+    int rv = -1;
+    virDomainPtr dom = NULL;
+    char *sts = NULL;
+    char **sts_p = NULL;
+    struct daemonClientPrivate *priv =
+        virNetServerClientGetPrivateData(client);
+
+    if (!priv->conn) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _("connection not open"));
+        goto cleanup;
+    }
+
+    if (!(dom = get_nonnull_domain(priv->conn, args->dom)))
+        goto cleanup;
+
+    if ((rv = virDomainGetResctrlMonSts(dom, &sts)) < 0)
+        goto cleanup;
+
+    if (VIR_ALLOC(sts_p) < 0)
+        goto cleanup;
+
+    if (VIR_STRDUP(*sts_p, sts) < 0)
+        goto cleanup;
+
+    ret->sts = sts_p;
+    rv = 0;
+
+cleanup:
+    if (rv < 0) {
+        virNetMessageSaveError(rerr);
+        VIR_FREE(sts_p);
+    }
+    virObjectUnref(dom);
+    VIR_FREE(sts);
+    return rv;
+}

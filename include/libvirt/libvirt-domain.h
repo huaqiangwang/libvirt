@@ -4767,4 +4767,13 @@ int virDomainSetLifecycleAction(virDomainPtr domain,
                                 unsigned int action,
                                 unsigned int flags);
 
+/*
+ * resctrl API
+ */
+int virDomainSetResctrlMon(virDomainPtr domain,
+        int enable, int disable);
+
+int virDomainGetResctrlMonSts(virDomainPtr domain,
+		char **sts);
+
 #endif /* __VIR_LIBVIRT_DOMAIN_H__ */
