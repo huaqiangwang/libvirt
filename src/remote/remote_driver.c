@@ -8451,6 +8451,8 @@ static virHypervisorDriver hypervisor_driver = {
     .domainSetLifecycleAction = remoteDomainSetLifecycleAction, /* 3.9.0 */
     .connectCompareHypervisorCPU = remoteConnectCompareHypervisorCPU, /* 4.4.0 */
     .connectBaselineHypervisorCPU = remoteConnectBaselineHypervisorCPU, /* 4.4.0 */
+    .domainSetResctrlMon = remoteDomainSetResctrlMon, /*FIXME: assign proper ver string */
+    .domainGetResctrlMonSts = remoteDomainGetResctrlMonSts, /*FIXME: assign proper ver string */
 };
 
 static virNetworkDriver network_driver = {

@@ -3480,6 +3480,20 @@ struct remote_connect_baseline_hypervisor_cpu_ret {
     remote_nonnull_string cpu;
 };
 
+struct remote_domain_set_resctrl_mon_args {
+    remote_nonnull_domain dom;
+    int enable;
+    int disable;
+};
+
+struct remote_domain_get_resctrl_mon_sts_args {
+    remote_nonnull_domain dom;
+};
+
+struct remote_domain_get_resctrl_mon_sts_ret { /* insert@1 */
+	remote_string sts;
+};
+
 /*----- Protocol. -----*/
 
 /* Define the program number, protocol version and procedure numbers here. */
@@ -6187,5 +6201,17 @@ enum remote_procedure {
      * @generate: both
      * @acl: connect:write
      */
-    REMOTE_PROC_CONNECT_BASELINE_HYPERVISOR_CPU = 394
+    REMOTE_PROC_CONNECT_BASELINE_HYPERVISOR_CPU = 394,
+
+    /**
+     * @generate: both
+     * @acl: domain:write
+     */
+    REMOTE_PROC_DOMAIN_SET_RESCTRL_MON = 395,
+
+    /**
+     * @generate: client
+     * @acl: domain:read
+     */
+    REMOTE_PROC_DOMAIN_GET_RESCTRL_MON_STS = 396
 };

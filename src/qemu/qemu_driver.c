@@ -108,6 +108,7 @@
 #include "virnuma.h"
 #include "dirname.h"
 #include "netdev_bandwidth_conf.h"
+#include "virresctrl.h"
 
 #define VIR_FROM_THIS VIR_FROM_QEMU
 
@@ -21437,6 +21438,144 @@ qemuDomainSetLifecycleAction(virDomainPtr dom,
 }
 
 
+static int
+qemuDomainSetResctrlMon(virDomainPtr dom,
+                        int enable, int disable)
+{
+    int ret = -1;
+    virDomainObjPtr vm;
+    virResctrlMonAct act = VIR_RESCTRL_MONACT_NONE;
+    size_t i = 0;
+    unsigned int maxvcpus = 0;
+
+    /* The 'enable' action will override the 'disable' one */
+    if (disable)
+        act = VIR_RESCTRL_MONACT_DISABLE;
+    if (enable)
+        act = VIR_RESCTRL_MONACT_ENABLE;
+
+    if (act == VIR_RESCTRL_MONACT_NONE)
+        return 0;
+
+    if (!(vm = qemuDomObjFromDomain(dom)))
+        return ret;
+
+    qemuDomainObjPrivatePtr priv = vm->privateData;
+
+    if (!virDomainObjIsActive(vm)) {
+        virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                       _("domain is not running"));
+        goto cleanup;
+    }
+
+    /* If 'resctrl' is enabled in xml configuation file through 'cachetune'
+     * section, this interface doesn't work. return 1 for this case */
+    if (vm->def->ncachetunes != 0) {
+        VIR_DEBUG("resctrl monitoring interface is governed by domain "
+               "configration 'cachetune' sections. Interface disabled.\n");
+        ret = 1;
+        goto cleanup;
+    }
+
+    if (act == VIR_RESCTRL_MONACT_ENABLE) {
+
+        if (!vm->def->resctrlmon_noalloc) {
+            virReportError(VIR_ERR_NO_DOMAIN, "%s",
+                    _("resctrlmon_noalloc should be allocated."));
+            goto cleanup;
+        }
+
+        if (!virResctrlMonIsRunning(vm->def->resctrlmon_noalloc)) {
+
+            if (virResctrlMonCreate(NULL,
+                        vm->def->resctrlmon_noalloc, priv->machineName) < 0)
+                goto cleanup;
+
+            /* Set vcpus */
+            maxvcpus = virDomainDefGetVcpusMax(vm->def);
+            for (i = 0; i < maxvcpus; i++) {
+                virDomainVcpuDefPtr vcpu
+                    = virDomainDefGetVcpu(vm->def, i);
+
+                if (!vcpu->online)
+                    continue;
+
+                pid_t vcpupid = qemuDomainGetVcpuPid(vm, i);
+                if (virResctrlMonAddPID(vm->def->resctrlmon_noalloc,
+                            vcpupid) < 0)
+                    goto cleanup;
+            }
+        }
+
+        VIR_DEBUG("resctrl monitoring is enabled");
+    } else if (act == VIR_RESCTRL_MONACT_DISABLE) {
+        if (!vm->def->resctrlmon_noalloc) {
+            virReportError(VIR_ERR_NO_DOMAIN, "%s",
+                    _("resctrlmon_noalloc should be allocated."));
+            goto cleanup;
+        }
+
+        if (virResctrlMonIsRunning(vm->def->resctrlmon_noalloc)) {
+            if (virResctrlMonRemove(vm->def->resctrlmon_noalloc) < 0) {
+                virReportError(VIR_ERR_NO_DOMAIN, "%s",
+                        _("Error in remove resctrl mon group."));
+                goto cleanup;
+            }
+        }
+
+        VIR_DEBUG("resctrl monitoring is disabled\n");
+    }
+
+    ret = 0;
+ cleanup:
+    virDomainObjEndAPI(&vm);
+    return ret;
+}
+
+
+static char *
+qemuDomainGetResctrlMonSts(virDomainPtr dom)
+{
+    virDomainObjPtr vm;
+    char *sts = NULL;
+
+    if (!(vm = qemuDomObjFromDomain(dom)))
+        return sts;
+
+    if (vm->def->ncachetunes != 0) {
+        VIR_DEBUG("resctrl monitoring interface is governed by domain "
+                "'cachetune' sections. resctrl monitoring is compulsively enabled.\n");
+
+        /* only check cachetune[0] for domain resctrl mon group status */
+        if (!virResctrlMonIsRunning(vm->def->cachetunes[0]->mon)) {
+            if (virAsprintf(&sts, "Disabled") < 0)
+                goto cleanup;
+        } else {
+            if (virAsprintf(&sts, "Enabled (forced by cachetune)") < 0)
+                goto cleanup;
+        }
+
+    } else {
+
+        if (vm->def->resctrlmon_noalloc &&
+                virResctrlMonIsRunning(vm->def->resctrlmon_noalloc)) {
+            if (virAsprintf(&sts, "Enabled") < 0)
+                goto cleanup;
+
+        } else {
+            if (virAsprintf(&sts, "Disabled") < 0)
+                goto cleanup;
+        }
+    }
+
+    VIR_DEBUG("resctrl monitoring status: %s\n", sts);
+
+ cleanup:
+    virDomainObjEndAPI(&vm);
+    return sts;
+}
+
+
 static virHypervisorDriver qemuHypervisorDriver = {
     .name = QEMU_DRIVER_NAME,
     .connectURIProbe = qemuConnectURIProbe,
@@ -21660,6 +21799,8 @@ static virHypervisorDriver qemuHypervisorDriver = {
     .domainSetLifecycleAction = qemuDomainSetLifecycleAction, /* 3.9.0 */
     .connectCompareHypervisorCPU = qemuConnectCompareHypervisorCPU, /* 4.4.0 */
     .connectBaselineHypervisorCPU = qemuConnectBaselineHypervisorCPU, /* 4.4.0 */
+    .domainSetResctrlMon = qemuDomainSetResctrlMon, /*FIXME: assign proper ver string */
+    .domainGetResctrlMonSts = qemuDomainGetResctrlMonSts, /*FIXME: assign proper ver string */
 };
 
 

@@ -2907,6 +2907,16 @@ struct remote_connect_baseline_hypervisor_cpu_args {
 struct remote_connect_baseline_hypervisor_cpu_ret {
         remote_nonnull_string      cpu;
 };
+struct remote_domain_set_resctrl_mon_args {
+        remote_nonnull_domain dom;
+        int enable;
+        int disable;
+}
+struct remote_domain_get_resctrl_mon_sts_args {
+        remote_nonnull_domain dom;
+};
+struct remote_domain_get_resctrl_mon_sts_ret {
+        remote_string sts;
 enum remote_procedure {
         REMOTE_PROC_CONNECT_OPEN = 1,
         REMOTE_PROC_CONNECT_CLOSE = 2,
@@ -3302,4 +3312,6 @@ enum remote_procedure {
         REMOTE_PROC_DOMAIN_DETACH_DEVICE_ALIAS = 392,
         REMOTE_PROC_CONNECT_COMPARE_HYPERVISOR_CPU = 393,
         REMOTE_PROC_CONNECT_BASELINE_HYPERVISOR_CPU = 394,
+		REMOTE_PROC_DOMAIN_SET_RESCTRL_MON = 395,
+		REMOTE_PROC_DOMAIN_GET_RESCTRL_MON_STS = 396,
 };
