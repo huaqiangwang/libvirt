@@ -2041,6 +2041,7 @@ typedef enum {
     VIR_DOMAIN_STATS_INTERFACE = (1 << 4), /* return domain interfaces info */
     VIR_DOMAIN_STATS_BLOCK = (1 << 5), /* return domain block info */
     VIR_DOMAIN_STATS_PERF = (1 << 6), /* return domain perf event info */
+    VIR_DOMAIN_STATS_RESCTRL = (1<<7), /*  return resctrlfs mornitoring info */
 } virDomainStatsTypes;
 
 typedef enum {

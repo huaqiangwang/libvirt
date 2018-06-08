@@ -11486,6 +11486,17 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
  *                               long long. It is produced by the
  *                               emulation_faults perf event
  *
+ * VIR_DOMAIN_STATS_RESCTRL
+ *     "resctrl.cmt"  - the usage of l3 cache (bytes) by applications running on
+ *                   the platform as unsigned long long. It is retrieved from
+ *                   resctrl file system.
+ *     "resctrl.mbmt" - the total system bandwidth (bytes/s) from one level of
+ *                    cache to another as unsigned long long. Retrieved from
+ *                   resctrl file system.
+ *     "resctrl.mbml" - the amount of data (bytes/s) sent through the memory
+ *                    controller on the socket as unsigned long long. Retrieved
+ *                    from resctrl file system.
+ *
  * Note that entire stats groups or individual stat fields may be missing from
  * the output in case they are not supported by the given hypervisor, are not
  * applicable for the current state of the guest domain, or their retrieval
