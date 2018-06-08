@@ -2634,6 +2634,15 @@ virResctrlAllocSetSize;
 virResctrlGetInfo;
 virResctrlInfoGetCache;
 virResctrlInfoNew;
+virResctrlMonNew;
+virResctrlMonSetID;
+virResctrlMonGetID;
+virResctrlMonDeterminePath;
+virResctrlMonAddPID;
+virResctrlMonCreate;
+virResctrlMonRemove;
+virResctrlMonIsRunning;
+virResctrlMonGetCacheOccupancy;
 
 
 # util/virrotatingfile.h

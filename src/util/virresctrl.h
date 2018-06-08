@@ -35,6 +35,12 @@ typedef enum {
 
 VIR_ENUM_DECL(virCache);
 
+typedef enum {
+    VIR_RESCTRL_MONACT_NONE,
+    VIR_RESCTRL_MONACT_ENABLE,
+    VIR_RESCTRL_MONACT_DISABLE
+} virResctrlMonAct;
+
 
 typedef struct _virResctrlInfoPerCache virResctrlInfoPerCache;
 typedef virResctrlInfoPerCache *virResctrlInfoPerCachePtr;
@@ -117,5 +123,43 @@ virResctrlAllocAddPID(virResctrlAllocPtr alloc,
 
 int
 virResctrlAllocRemove(virResctrlAllocPtr alloc);
+
+
+/* Monitoring-related things */
+typedef struct _virResctrlMon virResctrlMon;
+typedef virResctrlMon *virResctrlMonPtr;
+
+virResctrlMonPtr
+virResctrlMonNew(void);
+
+int
+virResctrlMonSetID(virResctrlMonPtr mon,
+        const char *id);
+
+const char *
+virResctrlMonGetID(virResctrlMonPtr mon);
+
+int
+virResctrlMonDeterminePath(virResctrlMonPtr mon,
+        const char *machinename);
+
+int
+virResctrlMonAddPID(virResctrlMonPtr alloc,
+        pid_t pid);
+
+int
+virResctrlMonCreate(virResctrlAllocPtr pairedalloc,
+        virResctrlMonPtr mon,
+        const char *machinename);
+
+int
+virResctrlMonRemove(virResctrlMonPtr mon);
+
+bool
+virResctrlMonIsRunning(virResctrlMonPtr mon);
+
+int
+virResctrlMonGetCacheOccupancy(virResctrlMonPtr mon,
+        unsigned int * cacheoccu);
 
 #endif /*  __VIR_RESCTRL_H__ */
