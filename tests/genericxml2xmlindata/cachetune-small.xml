@@ -8,6 +8,8 @@
     <cachetune vcpus='0-1'>
       <cache id='0' level='3' type='both' size='768' unit='KiB'/>
     </cachetune>
+    <resmongroup vcpus='0-1'/>
+    <resmongroup vcpus='2-3'/>
   </cputune>
   <os>
     <type arch='i686' machine='pc'>hvm</type>

@@ -145,6 +145,9 @@ mymain(void)
 
     DO_TEST("launch-security-sev");
 
+    DO_TEST_FULL("resmongroup-colliding-cachetune", false, true,
+                 TEST_COMPARE_DOM_XML2XML_RESULT_FAIL_PARSE);
+
     virObjectUnref(caps);
     virObjectUnref(xmlopt);
 

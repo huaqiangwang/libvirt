@@ -12,6 +12,8 @@
     <cachetune vcpus='3'>
       <cache id='0' level='3' type='both' size='3' unit='MiB'/>
     </cachetune>
+    <resmongroup vcpus='0-1'/>
+    <resmongroup vcpus='3'/>
   </cputune>
   <os>
     <type arch='i686' machine='pc'>hvm</type>
