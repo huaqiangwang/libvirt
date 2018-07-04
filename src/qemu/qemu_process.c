@@ -2444,10 +2444,12 @@ qemuProcessResctrlCreate(virQEMUDriverPtr driver,
 {
     int ret = -1;
     size_t i = 0;
+    size_t j = 0;
     virCapsPtr caps = NULL;
+    virResctrlAllocPtr alloc = NULL;
     qemuDomainObjPrivatePtr priv = vm->privateData;
 
-    if (!vm->def->ncachetunes)
+    if (!vm->def->ncachetunes && !vm->def->nresmons)
         return 0;
 
     /* Force capability refresh since resctrl info can change
@@ -2460,6 +2462,29 @@ qemuProcessResctrlCreate(virQEMUDriverPtr driver,
         if (virResctrlAllocCreate(caps->host.resctrl,
                                   vm->def->cachetunes[i]->alloc,
                                   priv->machineName) < 0)
+            goto cleanup;
+    }
+
+    for (i = 0; i < vm->def->nresmons; i++) {
+        alloc = NULL;
+        for (j = 0; j < vm->def->ncachetunes; j++) {
+            const char *monid
+                = virResctrlMonGetID(vm->def->resmons[i]->mon);
+            const char *allocid
+                = virResctrlAllocGetID(vm->def->cachetunes[j]->alloc);
+            if (STREQ(monid, allocid) &&
+                (virBitmapEqual(vm->def->resmons[i]->vcpus,
+                                vm->def->cachetunes[j]->vcpus))) {
+                alloc = vm->def->cachetunes[j]->alloc;
+                break;
+            }
+
+        }
+
+        if (virResctrlMonCreate(
+                                alloc,
+                                vm->def->resmons[i]->mon,
+                                priv->machineName) < 0)
             goto cleanup;
     }
 
@@ -5272,6 +5297,16 @@ qemuProcessSetupVcpu(virDomainObjPtr vm,
         }
     }
 
+    for (i = 0; i < vm->def->nresmons; i++) {
+        virDomainCpuResmonDefPtr rt = vm->def->resmons[i];
+
+        if (virBitmapIsBitSet(rt->vcpus, vcpuid)) {
+            if (virResctrlMonAddPID(rt->mon, vcpupid) < 0)
+                return -1;
+            break;
+        }
+    }
+
     return 0;
 }
 
@@ -6960,11 +6995,13 @@ void qemuProcessStop(virQEMUDriverPtr driver,
                  vm->def->name);
     }
 
-    /* Remove resctrl allocation after cgroups are cleaned up which makes it
-     * kind of safer (although removing the allocation should work even with
-     * pids in tasks file */
+    /* Remove resctrl allocation and monitoring group after cgroups are cleaned
+     * up which makes it kind of safer (although removing the allocation should
+     * work even with pids in tasks file */
     for (i = 0; i < vm->def->ncachetunes; i++)
         virResctrlAllocRemove(vm->def->cachetunes[i]->alloc);
+    for (i = 0; i < vm->def->nresmons; i++)
+        virResctrlMonRemove(vm->def->resmons[i]->mon);
 
     qemuProcessRemoveDomainStatus(driver, vm);
 
