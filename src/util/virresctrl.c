@@ -90,6 +90,7 @@ typedef virResctrlAllocPerLevel *virResctrlAllocPerLevelPtr;
 /* Class definitions and initializations */
 static virClassPtr virResctrlInfoClass;
 static virClassPtr virResctrlAllocClass;
+static virClassPtr virResctrlMonClass;
 
 
 /* virResctrlInfo */
@@ -257,6 +258,33 @@ virResctrlAllocDispose(void *obj)
 }
 
 
+
+/* virResctrlMon*/
+struct _virResctrlMon {
+    virObject parent;
+
+    /* alloc: keeps the pointer to a allocation group if sharing same
+     * resctrlfs subdirectory with a allocation group.
+     * NULL for a standalone monitoring group.*/
+    virResctrlAllocPtr alloc;
+    /* The identifier (any unique string for now) */
+    char *id;
+    /* libvirt-generated path, be identical to path of 'alloc' if sharing
+     * same resctrlfs subdirectory with allocation group */
+    char *path;
+};
+
+
+static void
+virResctrlMonDispose(void *obj)
+{
+    virResctrlMonPtr resctrlMon = obj;
+
+    VIR_FREE(resctrlMon->id);
+    VIR_FREE(resctrlMon->path);
+}
+
+
 /* Global initialization for classes */
 static int
 virResctrlOnceInit(void)
@@ -265,6 +293,9 @@ virResctrlOnceInit(void)
         return -1;
 
     if (!VIR_CLASS_NEW(virResctrlAlloc, virClassForObject()))
+        return -1;
+
+    if (!VIR_CLASS_NEW(virResctrlMon, virClassForObject()))
         return -1;
 
     return 0;
@@ -1611,4 +1642,311 @@ virResctrlAllocRemove(virResctrlAllocPtr alloc)
     }
 
     return ret;
+}
+
+
+virResctrlMonPtr
+virResctrlMonNew(void)
+{
+    if (virResctrlInitialize() < 0)
+        return NULL;
+
+    return virObjectNew(virResctrlMonClass);
+}
+
+
+int
+virResctrlMonSetID(virResctrlMonPtr mon,
+                     const char *id)
+{
+    if (!id) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                _("Resctrl mon group 'id' cannot be NULL"));
+        return -1;
+    }
+
+    return VIR_STRDUP(mon->id, id);
+}
+
+
+const char *
+virResctrlMonGetID(virResctrlMonPtr mon)
+{
+    return mon->id;
+}
+
+
+int
+virResctrlMonDeterminePath(virResctrlMonPtr mon,
+                             const char *machinename)
+{
+    char *grouppath = NULL;
+    int ret = -1;
+
+    if (!mon->id) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                _("Resctrl mon group id must be set before creation"));
+        goto cleanup;
+    }
+
+    if (!mon->path) {
+        if (virAsprintf(&grouppath, "%s/mon_groups/%s-%s",
+                        SYSFS_RESCTRL_PATH, machinename, mon->id) < 0) {
+
+            goto cleanup;
+        }
+        VIR_STEAL_PTR(mon->path, grouppath);
+
+    } else {
+        /* if path exists, validate it */
+        if (virAsprintf(&grouppath, "%s/%s-%s",
+                        SYSFS_RESCTRL_PATH, machinename, mon->id) < 0) {
+            goto cleanup;
+        }
+
+        if (STRNEQ(mon->path, grouppath))
+            goto cleanup;
+    }
+
+    ret = 0;
+ cleanup:
+    VIR_FREE(grouppath);
+    return ret;
+}
+
+
+int
+virResctrlMonAddPID(virResctrlMonPtr mon,
+                      pid_t pid)
+{
+    char *tasks = NULL;
+    char *pidstr = NULL;
+    int ret = 0;
+
+    /* PID only writes to standalone mon group */
+    if (mon->alloc)
+        return 0;
+
+    if (!mon->path) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                _("Cannot add pid to non-existing resctrl mon group"));
+        return -1;
+    }
+
+    VIR_DEBUG("Add PID %d to domain %s\n",
+            pid, mon->path);
+
+    if (virAsprintf(&tasks, "%s/tasks", mon->path) < 0)
+        return -1;
+
+    if (virAsprintf(&pidstr, "%lld", (long long int) pid) < 0)
+        goto cleanup;
+
+    if (virFileWriteStr(tasks, pidstr, 0) < 0) {
+        virReportSystemError(errno,
+                _("Cannot write pid in tasks file '%s'"),
+                tasks);
+        goto cleanup;
+    }
+
+    ret = 0;
+ cleanup:
+    VIR_FREE(tasks);
+    VIR_FREE(pidstr);
+    return ret;
+}
+
+
+int
+virResctrlMonCreate(virResctrlAllocPtr alloc,
+                      virResctrlMonPtr mon,
+                      const char *machinename)
+{
+    int ret = -1;
+    int lockfd = -1;
+
+    if (!mon)
+        return -1;
+
+    if (alloc) {
+        if (!virFileExists(alloc->path)) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                    _("resctrl mon group: allocation group exists but not "
+                      "valid"));
+            return -1;
+        }
+        mon->alloc = alloc;
+
+        if (virResctrlMonDeterminePath(mon, machinename) < 0)
+            return -1;
+    } else {
+        if (virResctrlMonDeterminePath(mon, machinename) < 0)
+            return -1;
+
+        lockfd = virResctrlLockWrite();
+        if (lockfd < 0)
+            goto cleanup;
+
+        if (virFileExists(mon->path)) {
+            VIR_DEBUG("Removing resctrl mon group %s", mon->path);
+            if (rmdir(mon->path) != 0 && errno != ENOENT) {
+                virReportSystemError(errno,
+                                     _("Unable to remove resctrl directory '%s'"),
+                                     mon->path);
+                goto cleanup;
+            }
+        }
+
+        if (virFileMakePath(mon->path) < 0) {
+            virReportSystemError(errno,
+                                _("Cannot create resctrl directory '%s'"),
+                                mon->path);
+            goto cleanup;
+        }
+    }
+
+    ret = 0;
+ cleanup:
+    virResctrlUnlock(lockfd);
+    return ret;
+}
+
+
+int
+virResctrlMonRemove(virResctrlMonPtr mon)
+{
+    int ret = 0;
+
+    if (!mon->path)
+        return 0;
+
+    VIR_DEBUG("Removing resctrl mon group %s", mon->path);
+    if (rmdir(mon->path) != 0 && errno != ENOENT) {
+        ret = -errno;
+        VIR_ERROR(_("Unable to remove %s (%d)"), mon->path, errno);
+    }
+
+    return ret;
+}
+
+
+bool
+virResctrlMonIsRunning(virResctrlMonPtr mon)
+{
+    bool ret = false;
+    int  rv = -1;
+    char *tasks = NULL;
+
+    if (mon && virFileExists(mon->path)) {
+        rv = virFileReadValueString(&tasks, "%s/tasks", mon->path);
+        if (rv < 0)
+            goto cleanup;
+
+        if (!tasks || !tasks[0])
+            goto cleanup;
+
+        ret = true;
+    }
+
+ cleanup:
+    VIR_FREE(tasks);
+    return ret;
+}
+
+
+static int
+virResctrlMonGetStatistic(virResctrlMonPtr mon,
+                          const char *resfile,
+                          unsigned int *value)
+{
+    DIR *dirp = NULL;
+    int ret = -1;
+    int rv = -1;
+    struct dirent *ent = NULL;
+    unsigned int val = 0;
+    unsigned int valtotal = 0;
+    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    char *mondatapath = NULL;
+
+    if (!mon->path)
+        goto cleanup;
+
+    if (!resfile)
+        goto cleanup;
+
+    *value = 0;
+
+    rv = virDirOpenIfExists(&dirp, mon->path);
+    if (rv <= 0)
+        goto cleanup;
+
+    virBufferAsprintf(&buf, "%s/mon_data",
+            mon->path);
+    mondatapath = virBufferContentAndReset(&buf);
+    if (!mondatapath)
+        goto cleanup;
+
+    VIR_DEBUG("Seek llc_occupancy file from root: %s ",
+              mondatapath);
+
+    if (virDirOpen(&dirp, mondatapath) < 0)
+        goto cleanup;
+
+    while ((rv = virDirRead(dirp, &ent, mondatapath)) > 0) {
+        VIR_DEBUG("Parsing file '%s'", ent->d_name);
+        if (ent->d_type != DT_DIR)
+            continue;
+
+        if (STRNEQLEN(ent->d_name, "mon_L", 5))
+            continue;
+
+        rv = virFileReadValueUint(&val,
+                                  "%s/%s/%s",
+                                  mondatapath, ent->d_name, resfile);
+
+        if (rv == -2) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("file %s/%s/%s does not exist"),
+                           mondatapath, ent->d_name, resfile);
+            goto cleanup;
+        } else {
+            if (rv < 0)
+                goto cleanup;
+        }
+
+        valtotal += val;
+    }
+
+    *value = valtotal;
+    ret = 0;
+ cleanup:
+    VIR_FREE(mondatapath);
+    VIR_DIR_CLOSE(dirp);
+    return ret;
+}
+
+int
+virResctrlMonGetCacheOccupancy(virResctrlMonPtr mon,
+                               unsigned int * cacheoccu)
+{
+    const char *cacheoccufile = "llc_occupancy";
+    unsigned int value = 0;
+    int ret = - 1;
+
+    *cacheoccu = 0;
+
+    ret = virResctrlMonGetStatistic(mon,
+                                    cacheoccufile,
+                                    &value);
+    if (ret >= 0)
+        *cacheoccu = value;
+
+    return ret;
+}
+
+
+virResctrlAllocPtr
+virResctrlMonGetAlloc(virResctrlMonPtr mon)
+{
+    return mon->alloc;
 }
