@@ -2966,6 +2966,20 @@ struct remote_connect_list_all_nwfilter_bindings_ret {
         } bindings;
         u_int                      ret;
 };
+struct remote_domain_set_cpu_resmon_args {
+    remote_nonnull_domain dom;
+    remote_string vcpustr;
+    remote_string monid;
+    int action;
+    unsigned int flags;
+};
+struct remote_domain_get_cpu_resmon_sts_args {
+    remote_nonnull_domain dom;
+    remote_nonnull_string monid;
+};
+struct remote_domain_get_cpu_resmon_sts_ret {
+    remote_string sts;
+};
 enum remote_procedure {
         REMOTE_PROC_CONNECT_OPEN = 1,
         REMOTE_PROC_CONNECT_CLOSE = 2,
@@ -3368,4 +3382,6 @@ enum remote_procedure {
         REMOTE_PROC_NWFILTER_BINDING_CREATE_XML = 399,
         REMOTE_PROC_NWFILTER_BINDING_DELETE = 400,
         REMOTE_PROC_CONNECT_LIST_ALL_NWFILTER_BINDINGS = 401,
+        REMOTE_PROC_DOMAIN_SET_CPU_RESMON = 402,
+        REMOTE_PROC_DOMAIN_GET_CPU_RESMON_STS = 403,
 };

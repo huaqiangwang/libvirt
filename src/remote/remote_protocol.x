@@ -3557,6 +3557,23 @@ struct remote_connect_list_all_nwfilter_bindings_ret { /* insert@1 */
     unsigned int ret;
 };
 
+struct remote_domain_set_cpu_resmon_args {
+    remote_nonnull_domain dom;
+    remote_string vcpustr;
+    remote_string monid;
+    int action;
+    unsigned int flags;
+};
+
+struct remote_domain_get_cpu_resmon_sts_args {
+    remote_nonnull_domain dom;
+    remote_nonnull_string monid;
+};
+
+struct remote_domain_get_cpu_resmon_sts_ret { /* insert@1 */
+    remote_string sts;
+};
+
 /*----- Protocol. -----*/
 
 /* Define the program number, protocol version and procedure numbers here. */
@@ -6312,5 +6329,17 @@ enum remote_procedure {
      * @acl: connect:search_nwfilter_bindings
      * @aclfilter: nwfilter_binding:getattr
      */
-    REMOTE_PROC_CONNECT_LIST_ALL_NWFILTER_BINDINGS = 401
+    REMOTE_PROC_CONNECT_LIST_ALL_NWFILTER_BINDINGS = 401,
+
+    /**
+     * @generate: both
+     * @acl: domain:write
+     */
+    REMOTE_PROC_DOMAIN_SET_CPU_RESMON = 402,
+
+    /**
+     * @generate: client
+     * @acl: domain:read
+     */
+    REMOTE_PROC_DOMAIN_GET_CPU_RESMON_STS = 403
 };
