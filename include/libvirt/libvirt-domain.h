@@ -4785,5 +4785,18 @@ int virDomainGetLaunchSecurityInfo(virDomainPtr domain,
                                    virTypedParameterPtr *params,
                                    int *nparams,
                                    unsigned int flags);
+/*
+ * cpures API
+ */
+int virDomainSetCPUResmon(virDomainPtr domain,
+                          const char *vcpustr,
+                          const char *mongroup,
+                          int action,
+                          unsigned int flags);
+
+int virDomainGetCPUResmonSts(virDomainPtr domain,
+                             const char *mongroup,
+                             char **sts);
+
 
 #endif /* __VIR_LIBVIRT_DOMAIN_H__ */

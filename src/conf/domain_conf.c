@@ -19219,6 +19219,7 @@ virDomainCpuResmonDefRemove(virDomainDefPtr def,
 
     if (!monid) {
         virReportError(VIR_ERR_INVALID_ARG,
+                       "%s",
                        _("Cannot remove resource monitoring group: "
                          "group name is NULL"));
         goto error;
@@ -19228,6 +19229,7 @@ virDomainCpuResmonDefRemove(virDomainDefPtr def,
         const char *id = virResctrlMonGetID(def->resmons[i]->mon);
         if (!id) {
             virReportError(VIR_ERR_INTERNAL_ERROR,
+                           "%s",
                            _("Cannot remove resource monitoring group: "
                              "error in get monitoring group name"));
         goto error;

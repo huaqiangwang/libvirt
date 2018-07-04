@@ -11488,6 +11488,11 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
  *                               long long. It is produced by the
  *                               emulation_faults perf event
  *
+ * VIR_DOMAIN_STATS_CPURES
+ *     "cpu.cacheoccupancy"  - the usage of l3 cache (bytes) by applications
+ *                  running on the platform as unsigned long long. It is
+ *                  retrieved from resctrl file system.
+ *
  * Note that entire stats groups or individual stat fields may be missing from
  * the output in case they are not supported by the given hypervisor, are not
  * applicable for the current state of the guest domain, or their retrieval
@@ -12216,6 +12221,97 @@ int virDomainGetLaunchSecurityInfo(virDomainPtr domain,
     }
     virReportUnsupportedError();
 
+ error:
+    virDispatchError(domain->conn);
+    return -1;
+}
+
+
+/**
+ * virDomainSetCPUResmon:
+ * @domain : a domain object
+ * @vcpustr: string specifying vcpus list
+ * @mongroup:  mon group id
+ * @action : action to be performed
+ *           1 for enabling a rdt monitroing group
+ *           2 for disabling a rdt monitroing group
+ *           not valid for others
+ * @flags  : bitwise-OR of virDomainModificationImpact
+ *
+ * Enable or disable resctrl monitoring.
+ *
+ * Returns -1 in case of failure, 0 in case of success.
+ */
+int
+virDomainSetCPUResmon(virDomainPtr domain,
+                      const char *vcpustr,
+                      const char *mongroup,
+                      int action,
+                      unsigned int flags)
+{
+    int ret;
+    virConnectPtr conn;
+
+    virResetLastError();
+
+    virCheckDomainReturn(domain, -1);
+
+    conn = domain->conn;
+
+    if (conn->driver->domainSetCPUResmon) {
+        ret = conn->driver->domainSetCPUResmon(
+                                               domain,
+                                               vcpustr,
+                                               mongroup,
+                                               action,
+                                               flags);
+        if (ret < 0)
+            goto error;
+        return ret;
+    }
+
+    virReportUnsupportedError();
+ error:
+    virDispatchError(domain->conn);
+    return -1;
+}
+
+
+/**
+ * virDomainGetCPUResmonSts:
+ * @domain: a domain object
+ * @mongroup:  mon group id
+ * @status: pointer of a string buffer for holding resctrl mon
+ * group status string, caller is responsible for free it.
+ *
+ * Get domain resctrl status.
+ *
+ * Returns -1 in case of failure, 0 in case of success.
+ */
+int
+virDomainGetCPUResmonSts(virDomainPtr domain,
+                         const char *mongroup,
+                         char **status)
+{
+    /* *allstatus*, the magic string for retrieving all domain's status */
+    const char *monid = mongroup ? mongroup : "*allstatus*";
+    virConnectPtr conn;
+
+    virResetLastError();
+
+    virCheckDomainReturn(domain, -1);
+
+    conn = domain->conn;
+
+    if (conn->driver->domainGetCPUResmonSts) {
+        *status = conn->driver->domainGetCPUResmonSts(domain, monid);
+        if (*status)
+            return 0;
+
+        goto error;
+    }
+
+    virReportUnsupportedError();
  error:
     virDispatchError(domain->conn);
     return -1;

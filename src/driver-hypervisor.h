@@ -1321,6 +1321,17 @@ typedef int
                                         int *nparams,
                                         unsigned int flags);
 
+typedef int
+(*virDrvDomainSetCPUResmon)(virDomainPtr domain,
+                            const char *vcpustr,
+                            const char *monid,
+                            int action,
+                            unsigned int flags);
+
+typedef char *
+(*virDrvDomainGetCPUResmonSts)(virDomainPtr domain,
+                               const char *monid);
+
 
 typedef struct _virHypervisorDriver virHypervisorDriver;
 typedef virHypervisorDriver *virHypervisorDriverPtr;
@@ -1572,6 +1583,8 @@ struct _virHypervisorDriver {
     virDrvConnectBaselineHypervisorCPU connectBaselineHypervisorCPU;
     virDrvNodeGetSEVInfo nodeGetSEVInfo;
     virDrvDomainGetLaunchSecurityInfo domainGetLaunchSecurityInfo;
+    virDrvDomainSetCPUResmon  domainSetCPUResmon;
+    virDrvDomainGetCPUResmonSts  domainGetCPUResmonSts;
 };
 
 
