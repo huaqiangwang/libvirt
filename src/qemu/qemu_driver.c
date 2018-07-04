@@ -21607,6 +21607,256 @@ qemuDomainGetLaunchSecurityInfo(virDomainPtr domain,
     return ret;
 }
 
+
+static int
+qemuDomainSetCPUResmon(virDomainPtr dom,
+                       const char *vcpumap,
+                       const char *monid,
+                       int action,
+                       unsigned int flags)
+{
+    virDomainDefPtr def;
+    virDomainDefPtr persistentDef;
+    virQEMUDriverPtr driver = dom->conn->privateData;
+    virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
+    virDomainObjPtr vm = NULL;
+    virBitmapPtr vcpus = NULL;
+    qemuDomainObjPrivatePtr priv = NULL;
+    unsigned int maxvcpus = 0;
+    size_t i = 0;
+    int ret = -1;
+
+    virCheckFlags(VIR_DOMAIN_AFFECT_LIVE | VIR_DOMAIN_AFFECT_CONFIG, -1);
+
+    if (action != 1 && action != 2) {
+        virReportError(VIR_ERR_INVALID_ARG, "%s",
+                       _("unsupported action."));
+        return ret;
+    }
+
+    if (!(vm = qemuDomObjFromDomain(dom)))
+        return ret;
+
+    if (vcpumap) {
+        if (virBitmapParse(vcpumap, &vcpus, QEMU_GUEST_VCPU_MAX_ID) < 0 ||
+                virBitmapLastSetBit(vcpus) < 0) {
+            virReportError(VIR_ERR_INVALID_ARG, "%s",
+                           _("no vcpus selected for modification"));
+            goto cleanup;
+        }
+    }
+
+    if (!vcpus) {
+        if (!monid) {
+            virReportError(VIR_ERR_INVALID_ARG, "%s",
+                           _("bad resource monitoring group ID"));
+            goto cleanup;
+        }
+
+        for (i = 0; i < vm->def->nresmons; i++) {
+           const char *id = virResctrlMonGetID(vm->def->resmons[i]->mon);
+           if (id && STREQ(monid, id)) {
+               vcpus = virBitmapNewCopy(vm->def->resmons[i]->vcpus);
+               break;
+           }
+       }
+
+        if (!vcpus) {
+           virReportError(VIR_ERR_INVALID_ARG, "%s",
+                          _("bad resource monitoring group ID"));
+           goto cleanup;
+       }
+    }
+
+    priv = vm->privateData;
+
+    if (virDomainSetCPUResmonEnsureACL(dom->conn, vm->def) < 0)
+        goto cleanup;
+
+    if (qemuDomainObjBeginJob(driver, vm, QEMU_JOB_MODIFY) < 0)
+        goto cleanup;
+
+    if (virDomainObjGetDefs(vm, flags, &def, &persistentDef) < 0)
+        goto endjob;
+
+    if (action == 2) {
+        /* action == 'DESTROY' */
+
+        if (def) {
+            virResctrlMonPtr mon = virDomainCpuResmonDefRemove(def, monid);
+            if (!mon)
+                goto endjob;
+
+            /* if allocation group exists, there is no way
+             * to disable it */
+            virResctrlAllocPtr alloc = virResctrlMonGetAlloc(mon);
+            if (!alloc) {
+                if (virResctrlMonRemove(mon) < 0) {
+                    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                                   _("Error in remove rdt mon group."));
+                    goto endjob;
+                }
+            }
+
+            virObjectUnref(mon);
+        }
+
+        if (persistentDef) {
+            virResctrlMonPtr monpersist =
+                virDomainCpuResmonDefRemove(persistentDef, monid);
+            if (!monpersist)
+                goto endjob;
+
+            virObjectUnref(monpersist);
+        }
+    }
+
+    if (action == 1) {
+        /* action == 'CREATE' */
+
+        if (def) {
+            virResctrlAllocPtr alloc = NULL;
+            if (!virDomainCpuResmonDefValidate(def,
+                                               monid,
+                                               vcpus,
+                                               &alloc)) {
+                virReportError(VIR_ERR_INVALID_ARG,
+                               "%s",
+                               _("error in create resource monitoring "
+                                 "group vcpus or group name conflicts "
+                                 "with domain settings"));
+                goto endjob;
+            }
+
+            virDomainCpuResmonDefPtr resmon =
+                virDomainCpuResmonDefAdd(def, vcpus, monid);
+
+            if (!resmon) {
+                virReportError(VIR_ERR_INVALID_ARG, "%s",
+                               _("cannot create set rdt monitoring for "
+                                 "live configuration."));
+                goto endjob;
+            }
+
+            if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir,
+                                    vm, driver->caps) < 0)
+                goto endjob;
+
+            if (!virResctrlMonIsRunning(resmon->mon)) {
+                if (virResctrlMonCreate(alloc,
+                                        resmon->mon,
+                                        priv->machineName) < 0)
+                    goto endjob;
+
+                maxvcpus = virDomainDefGetVcpusMax(vm->def);
+                for (i = 0; i < maxvcpus; i++) {
+                    virDomainVcpuDefPtr vcpu
+                        = virDomainDefGetVcpu(vm->def, i);
+
+                    if (!vcpu->online)
+                        continue;
+
+                    if (virBitmapIsBitSet(resmon->vcpus, i)) {
+                        pid_t vcpupid = qemuDomainGetVcpuPid(vm, i);
+                        if (virResctrlMonAddPID(resmon->mon, vcpupid) < 0)
+                            goto endjob;
+                    }
+                }
+            }
+        }
+
+        if (persistentDef) {
+            if (!virDomainCpuResmonDefValidate(persistentDef,
+                                               monid, vcpus,
+                                               NULL)) {
+                virReportError(VIR_ERR_INVALID_ARG,
+                               "%s",
+                               _("Error in creating resource monitoring "
+                                 "group: vcpus or group name conflicts "
+                                 "with domain settings"));
+                goto endjob;
+            }
+
+            if (!virDomainCpuResmonDefAdd(persistentDef,
+                                          vcpus,
+                                          monid)) {
+                virReportError(VIR_ERR_INVALID_ARG, "%s",
+                               _("cannot create set resource monitoring group "
+                                 "for domain persistent configuration"));
+                goto endjob;
+            }
+
+            if (virDomainSaveConfig(cfg->configDir, driver->caps,
+                                    persistentDef) < 0)
+                goto endjob;
+        }
+    }
+
+    ret = 0;
+ endjob:
+    qemuDomainObjEndJob(driver, vm);
+
+ cleanup:
+    virBitmapFree(vcpus);
+    virDomainObjEndAPI(&vm);
+    virObjectUnref(cfg);
+    return ret;
+}
+
+static char *
+qemuDomainGetCPUResmonSts(virDomainPtr dom, const char *monid)
+{
+    virDomainObjPtr vm = NULL;
+    virDomainCpuResmonDefPtr resmon = NULL;
+    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    char *bufstr = NULL;
+    char *sts = NULL;
+    size_t i = 0;
+    bool listallstatus = false;
+
+    /* "*allstatus*" is the magic string for getting all existing
+     * mon group status */
+    if (STREQ(monid, "*allstatus*"))
+        listallstatus = true;
+
+    if (virAsprintf(&sts, "no group found") < 0)
+            goto cleanup;
+
+    if (!(vm = qemuDomObjFromDomain(dom)))
+        return sts;
+
+    if (virDomainGetCPUResmonStsEnsureACL(dom->conn, vm->def) < 0)
+        goto cleanup;
+
+    for (i = 0; i < vm->def->nresmons; i++) {
+        resmon = vm->def->resmons[i];
+        const char *id = virResctrlMonGetID(resmon->mon);
+        if (!id)
+            goto cleanup;
+
+        if (!listallstatus && STRNEQ(monid, id))
+            continue;
+
+        if (virResctrlMonIsRunning(resmon->mon))
+            virBufferStrcat(&buf, "group name: ", id, ";", NULL);
+    }
+
+    bufstr = virBufferContentAndReset(&buf);
+
+    if (bufstr) {
+        VIR_FREE(sts);
+        if (VIR_STRDUP(sts, bufstr) < 0)
+            goto cleanup;
+        VIR_FREE(bufstr);
+    }
+
+ cleanup:
+    virBufferFreeAndReset(&buf);
+    virDomainObjEndAPI(&vm);
+    return sts;
+}
+
+
 static virHypervisorDriver qemuHypervisorDriver = {
     .name = QEMU_DRIVER_NAME,
     .connectURIProbe = qemuConnectURIProbe,
@@ -21832,6 +22082,8 @@ static virHypervisorDriver qemuHypervisorDriver = {
     .connectBaselineHypervisorCPU = qemuConnectBaselineHypervisorCPU, /* 4.4.0 */
     .nodeGetSEVInfo = qemuNodeGetSEVInfo, /* 4.5.0 */
     .domainGetLaunchSecurityInfo = qemuDomainGetLaunchSecurityInfo, /* 4.5.0 */
+    .domainSetCPUResmon = qemuDomainSetCPUResmon, /* 4.6.0 */
+    .domainGetCPUResmonSts = qemuDomainGetCPUResmonSts, /* 4.6.0 */
 };
 
 
