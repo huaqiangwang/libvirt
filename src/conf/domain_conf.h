@@ -2237,6 +2237,13 @@ struct _virDomainCachetuneDef {
     virResctrlAllocPtr alloc;
 };
 
+typedef struct _virDomainCpuResmonDef virDomainCpuResmonDef;
+typedef virDomainCpuResmonDef *virDomainCpuResmonDefPtr;
+
+struct _virDomainCpuResmonDef {
+    virBitmapPtr vcpus;
+    virResctrlMonPtr mon;
+};
 
 typedef struct _virDomainVcpuDef virDomainVcpuDef;
 typedef virDomainVcpuDef *virDomainVcpuDefPtr;
@@ -2412,6 +2419,9 @@ struct _virDomainDef {
 
     virDomainCachetuneDefPtr *cachetunes;
     size_t ncachetunes;
+
+    virDomainCpuResmonDefPtr *resmons;
+    size_t nresmons;
 
     virDomainNumaPtr numa;
     virDomainResourceDefPtr resource;
@@ -3639,5 +3649,20 @@ virDomainDiskGetDetectZeroesMode(virDomainDiskDiscard discard,
 
 bool
 virDomainDefHasManagedPR(const virDomainDef *def);
+
+bool
+virDomainCpuResmonDefValidate(virDomainDefPtr def,
+                              const char *id,
+                              virBitmapPtr vcpus,
+                              virResctrlAllocPtr *pairedalloc);
+
+virDomainCpuResmonDefPtr
+virDomainCpuResmonDefAdd(virDomainDefPtr def,
+                         virBitmapPtr vcpus,
+                         const char *monid);
+
+virResctrlMonPtr
+virDomainCpuResmonDefRemove(virDomainDefPtr def,
+                            const char *monid);
 
 #endif /* __DOMAIN_CONF_H */

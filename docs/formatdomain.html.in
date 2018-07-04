@@ -757,6 +757,8 @@
       &lt;cache id='0' level='3' type='both' size='3' unit='MiB'/&gt;
       &lt;cache id='1' level='3' type='both' size='3' unit='MiB'/&gt;
     &lt;/cachetune&gt;
+    &lt;resmongroup vcpus="0-3"/&gt;
+    &lt;resmongroup vcpus="4"/&gt;
   &lt;/cputune&gt;
   ...
 &lt;/domain&gt;
@@ -950,6 +952,21 @@
             </dl>
           </dd>
         </dl>
+
+      </dd>
+      <dt><code>resmongroup</code><span class="since">Since 4.6.0</span></dt>
+      <dd>
+        Optional <code>resmongroup</code> element can be used to create resctrl
+        monitoring group for purpose of reporting cache occupancy informatoin.
+        The attribute <code>vcpus</code> specifies vCPUs this monitoring group
+        applies and which is impacted by the <code>cachetune</code>
+        <code>vcpus</code> attribute. A <code>resmongroup</code>
+        <code>vcpus</code> is valid if it has the same setting with that of
+        <code>cachetune</code> element, but any other kind of overlap between
+        <code>vcpus</code> of <code>rdtmongroup</code> and
+        <code>cachetune</code> <code>vcpus</code> is not permitted. Further,
+        any other kind of vCPUs overlap between monitoring groups is allowed.
+        Optional attribute <code>id</code> specifies the group name.
 
       </dd>
     </dl>

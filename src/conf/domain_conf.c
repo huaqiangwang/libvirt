@@ -2975,6 +2975,18 @@ virDomainSEVDefFree(virDomainSEVDefPtr def)
 }
 
 
+static void
+virDomainCpuResmonDefFree(virDomainCpuResmonDefPtr resmon)
+{
+    if (!resmon)
+        return;
+
+    virObjectUnref(resmon->mon);
+    virBitmapFree(resmon->vcpus);
+    VIR_FREE(resmon);
+}
+
+
 void virDomainDefFree(virDomainDefPtr def)
 {
     size_t i;
@@ -3151,6 +3163,10 @@ void virDomainDefFree(virDomainDefPtr def)
     for (i = 0; i < def->ncachetunes; i++)
         virDomainCachetuneDefFree(def->cachetunes[i]);
     VIR_FREE(def->cachetunes);
+
+    for (i = 0; i < def->nresmons; i++)
+        virDomainCpuResmonDefFree(def->resmons[i]);
+    VIR_FREE(def->resmons);
 
     VIR_FREE(def->keywrap);
 
@@ -19055,6 +19071,264 @@ virDomainCachetuneDefParse(virDomainDefPtr def,
 }
 
 
+bool
+virDomainCpuResmonDefValidate(virDomainDefPtr def,
+                              const char *id,
+                              virBitmapPtr vcpus,
+                              virResctrlAllocPtr *alloc)
+{
+    ssize_t i = -1;
+
+    /* vcpu should exist in current domain */
+    while ((i = virBitmapNextSetBit(vcpus, i)) > -1) {
+        if (!virDomainDefGetVcpu(def, i))
+            return false;
+    }
+
+    if (alloc)
+        *alloc = NULL;
+
+    /* if 'vcpus' equals to vcpus of any existing allocation group, means, mon
+     * group is sharing same resctrl resource group with allocation group, this
+     * is a legal case. Otherwise, no vcpu overlap is allowed between mon group
+     * and any aollocation group.
+     * if a mon group is sharing the same resource group with one allocation
+     * group, we hope the mon group and the allocation group have a same 'id',
+     * and the 'alloc' pointer points to the allocation group. */
+    for (i = 0; i < def->ncachetunes; i++) {
+        if (virBitmapOverlaps(vcpus, def->cachetunes[i]->vcpus)) {
+            if (virBitmapEqual(vcpus, def->cachetunes[i]->vcpus)) {
+                const char *allocid =
+                    virResctrlAllocGetID(def->cachetunes[i]->alloc);
+                if (!allocid || (id && STRNEQ(id, allocid)))
+                    return false;
+
+                if (alloc)
+                    *alloc = def->cachetunes[i]->alloc;
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    /* if vcpus equals to vcpus of existing mon group vcpus,
+     * a mon group already created, return True.
+     * for new mon group no overlap for vcpus */
+    for (i = 0; i < def->nresmons; i++) {
+        if (virBitmapEqual(vcpus, def->resmons[i]->vcpus) &&
+            (!id ||
+            STREQ(id, virResctrlMonGetID(def->resmons[i]->mon))))
+            return true;
+
+        if (virBitmapOverlaps(vcpus, def->resmons[i]->vcpus))
+            return false;
+    }
+
+    return true;
+}
+
+
+virDomainCpuResmonDefPtr
+virDomainCpuResmonDefAdd(virDomainDefPtr def,
+                         virBitmapPtr vcpuslist,
+                         const char *monid)
+{
+    virDomainCpuResmonDefPtr resmon = NULL;
+    virResctrlMonPtr mon = NULL;
+    char *id = NULL;
+    char *vcpus_str = NULL;
+    size_t i = -1;
+    virDomainCpuResmonDefPtr ret = NULL;
+    virBitmapPtr vcpus = virBitmapNewCopy(vcpuslist);
+
+    if (VIR_STRDUP(id, monid) < 0)
+        goto cleanup;
+
+    for (i = 0; i < def->nresmons; i++) {
+        if (virBitmapEqual(vcpus, def->resmons[i]->vcpus)) {
+            if (!id ||
+                STREQ(id, virResctrlMonGetID(def->resmons[i]->mon))) {
+                ret = def->resmons[i];
+                goto cleanup;
+            }
+            virReportError(VIR_ERR_INVALID_ARG,
+                    "%s", _("resource monitoring group id mismatch"));
+            goto cleanup;
+        }
+    }
+
+    /* resouce group created by cachtune also has a mon group, if matched
+     * copying the group id and no sub-directory under resctrl fs will be
+     * created */
+    for (i = 0; i < def->ncachetunes; i++) {
+        if (virBitmapEqual(vcpus, def->cachetunes[i]->vcpus)) {
+            const char *allocid
+                = virResctrlAllocGetID(def->cachetunes[i]->alloc);
+            /* for mon group matched in cachetunes list should never
+             * be disabled because we cannot disable an allocation
+             * group in runtime */
+            if (!id) {
+                if (VIR_STRDUP(id, allocid) < 0)
+                    goto cleanup;
+
+            }
+            break;
+        }
+    }
+
+    if (!id) {
+        vcpus_str = virBitmapFormat(vcpus);
+        if (virAsprintf(&id, "vcpus_%s", vcpus_str) < 0)
+            goto cleanup;
+    }
+
+    if (VIR_ALLOC(resmon) < 0)
+        goto cleanup;
+
+    mon = virResctrlMonNew();
+    if (!mon)
+        goto cleanup;
+
+    if (virResctrlMonSetID(mon, id) < 0)
+        goto cleanup;
+
+    VIR_STEAL_PTR(resmon->vcpus, vcpus);
+    VIR_STEAL_PTR(resmon->mon, mon);
+
+    if (VIR_APPEND_ELEMENT(def->resmons, def->nresmons, resmon) < 0)
+        goto cleanup;
+
+    ret = def->resmons[def->nresmons - 1];
+ cleanup:
+    virBitmapFree(vcpus);
+    VIR_FREE(id);
+    virDomainCpuResmonDefFree(resmon);
+    virObjectUnref(mon);
+    return ret;
+}
+
+
+virResctrlMonPtr
+virDomainCpuResmonDefRemove(virDomainDefPtr def,
+                            const char *monid)
+{
+    virDomainCpuResmonDefPtr resmon = NULL;
+    virResctrlMonPtr mon = NULL;
+    size_t i = -1;
+
+    if (!monid) {
+        virReportError(VIR_ERR_INVALID_ARG,
+                       _("Cannot remove resource monitoring group: "
+                         "group name is NULL"));
+        goto error;
+    }
+
+    for (i = 0; i < def->nresmons; i++) {
+        const char *id = virResctrlMonGetID(def->resmons[i]->mon);
+        if (!id) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("Cannot remove resource monitoring group: "
+                             "error in get monitoring group name"));
+        goto error;
+        }
+
+        if (STREQ(monid, id))
+            break;
+    }
+
+    if (i == def->nresmons) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Cannot remove resource monitoring group: "
+                         "no monitoring group '%s' found"),
+                      monid);
+        goto error;
+    }
+
+    resmon = def->resmons[i];
+    VIR_DELETE_ELEMENT(def->resmons, i, def->nresmons);
+
+    mon = resmon->mon;
+    virBitmapFree(resmon->vcpus);
+    VIR_FREE(resmon);
+ error:
+    return mon;
+}
+
+
+static int
+virDomainCpuResmonDefParse(virDomainDefPtr def,
+                           xmlXPathContextPtr ctxt,
+                           unsigned int flags)
+{
+    xmlNodePtr oldnode = ctxt->node;
+    xmlNodePtr *nodes = NULL;
+    virBitmapPtr vcpus = NULL;
+    char *vcpus_str = NULL;
+    char *monid = NULL;
+    size_t i = 0;
+    int n = 0;
+    int ret = -1;
+
+    if ((n = virXPathNodeSet("./cputune/resmongroup", ctxt, &nodes)) < 0)
+        goto cleanup;
+
+    for (i = 0; i < n; i++) {
+
+        if (!(vcpus_str = virXMLPropString(nodes[i], "vcpus"))) {
+            virReportError(VIR_ERR_XML_ERROR, "%s",
+                    _("Missing resmongroup attribute 'vcpus'"));
+            goto cleanup;
+        }
+
+        if (virBitmapParse(vcpus_str, &vcpus, VIR_DOMAIN_CPUMASK_LEN) < 0) {
+            virReportError(VIR_ERR_XML_ERROR,
+                    _("Invalid resmongroup attribute 'vcpus' value '%s'"),
+                    vcpus_str);
+            goto cleanup;
+        }
+
+        virBitmapShrink(vcpus, def->maxvcpus);
+
+        if (virBitmapIsAllClear(vcpus)) {
+            ret = 0;
+            goto cleanup;
+        }
+
+        if (!(flags & VIR_DOMAIN_DEF_PARSE_INACTIVE))
+            monid = virXMLPropString(nodes[i], "id");
+
+        if (!virDomainCpuResmonDefValidate(def, monid, vcpus, NULL)) {
+            virReportError(VIR_ERR_INVALID_ARG,
+                    "%s", _("vcpus or group name conflicts with domain "
+                            "settings"));
+            goto cleanup;
+        }
+
+        if (!virDomainCpuResmonDefAdd(def, vcpus, monid)) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                    "%s", _("Error in add resource monitoring group settings "
+                            "to configuration file"));
+            goto cleanup;
+        }
+
+        virBitmapFree(vcpus);
+        vcpus = NULL;
+        VIR_FREE(monid);
+        monid = NULL;
+    }
+
+    ret = 0;
+ cleanup:
+    ctxt->node = oldnode;
+    virBitmapFree(vcpus);
+    VIR_FREE(monid);
+    VIR_FREE(vcpus_str);
+    VIR_FREE(nodes);
+    return ret;
+}
+
+
 static virDomainDefPtr
 virDomainDefParseXML(xmlDocPtr xml,
                      xmlNodePtr root,
@@ -19648,7 +19922,14 @@ virDomainDefParseXML(xmlDocPtr xml,
         if (virDomainCachetuneDefParse(def, ctxt, nodes[i], flags) < 0)
             goto error;
     }
+
     VIR_FREE(nodes);
+
+    if (virDomainCpuResmonDefParse(def, ctxt, flags) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                _("cannot extract CPU resource monitoring group setting"));
+        goto error;
+    }
 
     if (virCPUDefParseXML(ctxt, "./cpu[1]", VIR_CPU_TYPE_GUEST, &def->cpu) < 0)
         goto error;
@@ -26943,6 +27224,41 @@ virDomainCachetuneDefFormat(virBufferPtr buf,
 
 
 static int
+virDomainCpuResmonDefFormat(virBufferPtr buf,
+                            virDomainDefPtr def,
+                            unsigned int flags)
+{
+    char *vcpus = NULL;
+    size_t i = 0;
+    int ret = -1;
+
+    for (i = 0; i < def->nresmons; i++) {
+        vcpus = virBitmapFormat(def->resmons[i]->vcpus);
+        if (!vcpus)
+            goto cleanup;
+
+        virBufferAsprintf(buf, "<resmongroup vcpus='%s'", vcpus);
+
+        if (!(flags & VIR_DOMAIN_DEF_FORMAT_INACTIVE)) {
+            const char *mon_id = virResctrlMonGetID(def->resmons[i]->mon);
+            if (!mon_id)
+                goto cleanup;
+
+            virBufferAsprintf(buf, " id='%s'", mon_id);
+        }
+        virBufferAddLit(buf, "/>\n");
+
+        VIR_FREE(vcpus);
+    }
+
+    ret = 0;
+ cleanup:
+    VIR_FREE(vcpus);
+    return ret;
+}
+
+
+static int
 virDomainCputuneDefFormat(virBufferPtr buf,
                           virDomainDefPtr def,
                           unsigned int flags)
@@ -27046,6 +27362,8 @@ virDomainCputuneDefFormat(virBufferPtr buf,
 
     for (i = 0; i < def->ncachetunes; i++)
         virDomainCachetuneDefFormat(&childrenBuf, def->cachetunes[i], flags);
+
+    virDomainCpuResmonDefFormat(&childrenBuf, def, flags);
 
     if (virBufferCheckError(&childrenBuf) < 0)
         return -1;

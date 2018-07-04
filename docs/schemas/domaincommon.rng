@@ -952,6 +952,20 @@
           </element>
         </zeroOrMore>
         <zeroOrMore>
+          <element name="resmongroup">
+            <attribute name="vcpus">
+              <ref name='cpuset'/>
+            </attribute>
+            <optional>
+              <attribute name="id">
+                <data type="string">
+                  <param name='pattern'>[a-zA-Z0-9,-_]+</param>
+                </data>
+              </attribute>
+            </optional>
+          </element>
+        </zeroOrMore>
+        <zeroOrMore>
           <element name="cachetune">
             <attribute name="vcpus">
               <ref name='cpuset'/>
