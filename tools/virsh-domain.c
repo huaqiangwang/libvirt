@@ -7677,6 +7677,139 @@ cmdIOThreadDel(vshControl *ctl, const vshCmd *cmd)
     return ret;
 }
 
+static const vshCmdInfo info_cpuresource[] = {
+    {.name = "help",
+     .data = N_("get or set hardware CPU RDT monitoring group")
+    },
+    {.name = "desc",
+     .data = N_("Create or destroy CPU resource monitoring group.\n"
+                "    To get current CPU resource monitoring group status: "
+                "    virsh # cpuresource [domain]")
+    },
+    {.name = NULL}
+};
+
+static const vshCmdOptDef opts_cpurescource[] = {
+    VIRSH_COMMON_OPT_DOMAIN_FULL(0),
+    {.name = "group_name",
+     .type = VSH_OT_ALIAS,
+     .help = "group-name"
+    },
+    {.name = "group-name",
+     .type = VSH_OT_STRING,
+     .flags = VSH_OFLAG_REQ_OPT,
+     .help = N_("group name to manipulate")
+    },
+    {.name = "vcpulist",
+     .type = VSH_OT_STRING,
+     .flags = VSH_OFLAG_REQ_OPT,
+     .help = N_("ids of vcpus to manipulate")
+    },
+    {.name = "create",
+     .type = VSH_OT_BOOL,
+     .help = N_("Create CPU resctrl monitoring group for functions such as "
+                "monitoring cache occupancy"),
+    },
+    {.name = "destroy",
+     .type = VSH_OT_BOOL,
+     .help = N_("Destroy CPU resctrl monitoring group")
+    },
+    VIRSH_COMMON_OPT_LIVE(N_("modify/get running state")),
+    VIRSH_COMMON_OPT_CONFIG(N_("modify/get persistent configuration")),
+    VIRSH_COMMON_OPT_DOMAIN_CURRENT,
+    {.name = NULL}
+};
+
+
+static bool
+cmdCpuResource(vshControl *ctl, const vshCmd *cmd)
+{
+    virDomainPtr dom;
+    bool ret = false;
+    char *status = NULL;
+    int  action = 0;
+    bool config = vshCommandOptBool(cmd, "config");
+    bool live = vshCommandOptBool(cmd, "live");
+    bool enable = vshCommandOptBool(cmd, "create");
+    bool disable = vshCommandOptBool(cmd, "destroy");
+    bool current = vshCommandOptBool(cmd, "current");
+    const char *vcpustr = NULL;
+    const char *group_name = NULL;
+    unsigned int flags = VIR_DOMAIN_AFFECT_CURRENT;
+    char **tok = NULL;
+    size_t ntok = 0;
+    size_t i = 0;
+    int maxvcpus = 0;
+
+    VSH_EXCLUSIVE_OPTIONS_VAR(enable, disable);
+
+    VSH_EXCLUSIVE_OPTIONS_VAR(current, live);
+    VSH_EXCLUSIVE_OPTIONS_VAR(current, config);
+
+    VSH_REQUIRE_OPTION("disable", "group-name");
+
+    if (config)
+        flags |= VIR_DOMAIN_AFFECT_CONFIG;
+    if (live)
+        flags |= VIR_DOMAIN_AFFECT_LIVE;
+
+    if (vshCommandOptStringReq(ctl, cmd, "group-name", &group_name))
+        return false;
+
+    if (vshCommandOptStringReq(ctl, cmd, "vcpulist", &vcpustr))
+        return false;
+
+    if (enable && !vcpustr && !group_name) {
+        vshError(ctl, _("Option --create requires at least one "
+                    "of the options --group-name or --vcpulist"));
+        return false;
+    }
+
+    if (!(dom = virshCommandOptDomain(ctl, cmd, NULL)))
+        return false;
+
+    if (!enable && !disable) {
+        if (virDomainGetCPUResmonSts(dom, group_name, &status) < 0)
+            goto cleanup;
+
+        if (!status)
+            goto cleanup;
+
+        maxvcpus = virDomainGetMaxVcpus(dom);
+        if (maxvcpus == -1)
+            goto cleanup;
+
+        if (!(tok = virStringSplitCount(status, ";", maxvcpus + 1, &ntok)))
+            goto cleanup;
+
+        if (ntok > maxvcpus)
+            ntok = maxvcpus;
+
+        vshPrint(ctl, "CPU Resource Monitoring Group Status: \n");
+
+        for (i = 0; i < ntok; i++)
+            vshPrint(ctl, "    %s\n", tok[i]);
+    } else {
+        if (disable)
+            action = 2;
+        if (enable)
+            action = 1;
+
+        if (virDomainSetCPUResmon(dom, vcpustr, group_name, action, flags) < 0)
+            goto cleanup;
+
+        if (!status)
+            goto cleanup;
+    }
+
+    ret = true;
+ cleanup:
+    VIR_FREE(status);
+    virStringListFree(tok);
+    virshDomainFree(dom);
+    return ret;
+}
+
 /*
  * "cpu-stats" command
  */
@@ -13724,6 +13857,12 @@ const vshCmdDef domManagementCmds[] = {
      .handler = cmdAttachDevice,
      .opts = opts_attach_device,
      .info = info_attach_device,
+     .flags = 0
+    },
+    {.name = "cpu-resource",
+     .handler = cmdCpuResource,
+     .opts = opts_cpurescource,
+     .info = info_cpuresource,
      .flags = 0
     },
     {.name = "attach-disk",
