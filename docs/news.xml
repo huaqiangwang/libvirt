@@ -44,6 +44,16 @@
           support should be available to the guest.
         </description>
       </change>
+      <change>
+        <summary>
+          Add support for Intel x86 RDT CMT(Cache Monitoring Technology)
+        </summary>
+        <description>
+          Report domain cache occupancy information based on vcpu groups.
+          Add a live command 'cpu-resource' for creating, destroying and
+          reporing the CPU resource monitoring group status.
+        </description>
+      </change>
     </section>
     <section title="Improvements">
     </section>
