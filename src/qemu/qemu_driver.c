@@ -20330,6 +20330,110 @@ qemuDomainGetStatsPerf(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
     return ret;
 }
 
+
+static int
+qemuDomainGetStatsCPUResmon(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+                            virDomainObjPtr vm,
+                            virDomainStatsRecordPtr record,
+                            int *maxparams,
+                            unsigned int privflags ATTRIBUTE_UNUSED)
+{
+    char param_name[VIR_TYPED_PARAM_FIELD_LENGTH];
+    size_t i = 0;
+    size_t l = 0;
+    unsigned int llc_occu = 0;
+    int ret = -1;
+    char *vcpustr = NULL;
+
+    for (i = 0; i < vm->def->nresmons; i++) {
+        virDomainCpuResmonDefPtr resmon = vm->def->resmons[i];
+
+        llc_occu = 0;
+        if (virResctrlMonIsRunning(resmon->mon)) {
+            if (virResctrlMonGetCacheOccupancy(resmon->mon, &llc_occu) < 0)
+                goto cleanup;
+        }
+
+        const char *mon_id = virResctrlMonGetID(resmon->mon);
+        if (!mon_id)
+            goto cleanup;
+        if (!(vcpustr = virBitmapFormat(resmon->vcpus)))
+            goto cleanup;
+
+        /* for vcpu string, both '1-3' and '1,3' are valid format and
+         * representing different vcpu set. But it is not easy to
+         * differentiate them at first galance, to avoid this case
+         * substituting all '-' with ',', e.g. substitute '1-3' with
+         * '1,2,3'  */
+        for (l = 0; l < strlen(vcpustr); l++) {
+            if (vcpustr[l] == '-') {
+                char strbuf[256];
+                unsigned int cpul = 0;
+                unsigned int cpur = 0;
+                virBuffer buf = VIR_BUFFER_INITIALIZER;
+                unsigned int icpu = 0;
+                char *tmp = NULL;
+
+                /* virStrToLong_ui is very tricking in processing '-'. to
+                 * avoid to trigger error, replace '-' with '_' */
+                vcpustr[l] = '_';
+
+                if (virStrToLong_ui(vcpustr, &tmp, 10, &cpul) < 0)
+                    goto cleanup;
+                if (virStrToLong_ui(vcpustr + l + 1, &tmp, 10, &cpur) < 0)
+                    goto cleanup;
+                if (cpur < cpul)
+                    goto cleanup;
+
+                for (icpu = cpul; icpu <= cpur; icpu++) {
+                    snprintf(strbuf, 256, "%d", icpu);
+                    virBufferStrcat(&buf, strbuf, NULL);
+                    if (icpu != cpur)
+                        virBufferStrcat(&buf, ",", NULL);
+                }
+
+                VIR_FREE(vcpustr);
+                vcpustr = virBufferContentAndReset(&buf);
+
+                break;
+            }
+        }
+
+        snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
+                 "cpu.cacheoccupancy.%s.value",
+                 mon_id);
+
+        if (virTypedParamsAddInt(&record->params,
+                    &record->nparams,
+                    maxparams,
+                    param_name,
+                    llc_occu) < 0) {
+            goto cleanup;
+        }
+
+        snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
+                 "cpu.cacheoccupancy.%s.vcpus",
+                 mon_id);
+
+        if (virTypedParamsAddString(&record->params,
+                                 &record->nparams,
+                                 maxparams,
+                                 param_name,
+                                 vcpustr) < 0) {
+            goto cleanup;
+        }
+
+        VIR_FREE(vcpustr);
+        vcpustr = NULL;
+    }
+
+    ret = 0;
+ cleanup:
+    VIR_FREE(vcpustr);
+    return ret;
+}
+
+
 typedef int
 (*qemuDomainGetStatsFunc)(virQEMUDriverPtr driver,
                           virDomainObjPtr dom,
@@ -20351,6 +20455,7 @@ static struct qemuDomainGetStatsWorker qemuDomainGetStatsWorkers[] = {
     { qemuDomainGetStatsInterface, VIR_DOMAIN_STATS_INTERFACE, false },
     { qemuDomainGetStatsBlock, VIR_DOMAIN_STATS_BLOCK, true },
     { qemuDomainGetStatsPerf, VIR_DOMAIN_STATS_PERF, false },
+    { qemuDomainGetStatsCPUResmon, VIR_DOMAIN_STATS_CPU_RES, false },
     { NULL, 0, false }
 };
 

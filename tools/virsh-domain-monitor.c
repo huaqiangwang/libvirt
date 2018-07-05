@@ -2099,6 +2099,10 @@ static const vshCmdOptDef opts_domstats[] = {
      .type = VSH_OT_BOOL,
      .help = N_("report only stats that are accessible instantly"),
     },
+    {.name = "cpu-resource",
+     .type = VSH_OT_BOOL,
+     .help = N_("report cpu resource information"),
+    },
     VIRSH_COMMON_OPT_DOMAIN_OT_ARGV(N_("list of domains to get stats for"), 0),
     {.name = NULL}
 };
@@ -2163,6 +2167,9 @@ cmdDomstats(vshControl *ctl, const vshCmd *cmd)
 
     if (vshCommandOptBool(cmd, "perf"))
         stats |= VIR_DOMAIN_STATS_PERF;
+
+    if (vshCommandOptBool(cmd, "cpu-resource"))
+        stats |= VIR_DOMAIN_STATS_CPU_RES;
 
     if (vshCommandOptBool(cmd, "list-active"))
         flags |= VIR_CONNECT_GET_ALL_DOMAINS_STATS_ACTIVE;
