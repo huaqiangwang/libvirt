@@ -20341,17 +20341,23 @@ qemuDomainGetStatsCPUResmon(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
     char param_name[VIR_TYPED_PARAM_FIELD_LENGTH];
     size_t i = 0;
     size_t l = 0;
-    unsigned int llc_occu = 0;
     int ret = -1;
     char *vcpustr = NULL;
+    unsigned int len = 0;
+    unsigned int *ids = NULL;
+    unsigned int *caches = NULL;
 
     for (i = 0; i < vm->def->nresmons; i++) {
         virDomainCpuResmonDefPtr resmon = vm->def->resmons[i];
 
-        llc_occu = 0;
-        if (virResctrlMonIsRunning(resmon->mon)) {
-            if (virResctrlMonGetCacheOccupancy(resmon->mon, &llc_occu) < 0)
-                goto cleanup;
+        if (!virResctrlMonIsRunning(resmon->mon))
+            continue;
+
+        if (virResctrlMonGetCacheOccupancy(resmon->mon,
+                                           &len,
+                                           &ids,
+                                           &caches) < 0) {
+            goto cleanup;
         }
 
         const char *mon_id = virResctrlMonGetID(resmon->mon);
@@ -20400,18 +20406,6 @@ qemuDomainGetStatsCPUResmon(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
         }
 
         snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
-                 "cpu.cacheoccupancy.%s.value",
-                 mon_id);
-
-        if (virTypedParamsAddInt(&record->params,
-                    &record->nparams,
-                    maxparams,
-                    param_name,
-                    llc_occu) < 0) {
-            goto cleanup;
-        }
-
-        snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
                  "cpu.cacheoccupancy.%s.vcpus",
                  mon_id);
 
@@ -20423,12 +20417,34 @@ qemuDomainGetStatsCPUResmon(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
             goto cleanup;
         }
 
+        for (l = 0; l < len; l++) {
+            snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
+                     "cpu.cacheoccupancy.%s.%d.value",
+                     mon_id,
+                     *(ids + l));
+
+            if (virTypedParamsAddInt(&record->params,
+                                     &record->nparams,
+                                     maxparams,
+                                     param_name,
+                                     *(caches + l)) < 0) {
+                goto cleanup;
+            }
+        }
+
+        VIR_FREE(ids);
+        VIR_FREE(caches);
         VIR_FREE(vcpustr);
+        ids = NULL;
+        caches = NULL;
+        len = 0;
         vcpustr = NULL;
     }
 
     ret = 0;
  cleanup:
+    VIR_FREE(ids);
+    VIR_FREE(caches);
     VIR_FREE(vcpustr);
     return ret;
 }

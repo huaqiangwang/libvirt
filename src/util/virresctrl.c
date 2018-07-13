@@ -1857,24 +1857,27 @@ virResctrlMonIsRunning(virResctrlMonPtr mon)
 static int
 virResctrlMonGetStatistic(virResctrlMonPtr mon,
                           const char *resfile,
-                          unsigned int *value)
+                          unsigned int *nblock,
+                          unsigned int **blockids,
+                          unsigned int **blockvals)
 {
     DIR *dirp = NULL;
     int ret = -1;
     int rv = -1;
     struct dirent *ent = NULL;
-    unsigned int val = 0;
-    unsigned int valtotal = 0;
     virBuffer buf = VIR_BUFFER_INITIALIZER;
     char *mondatapath = NULL;
+    size_t ntmpid = 0;
+    size_t ntmpval = 0;
+
+    if (nblock == NULL || blockids == NULL || blockvals == NULL)
+        goto cleanup;
 
     if (!mon->path)
         goto cleanup;
 
     if (!resfile)
         goto cleanup;
-
-    *value = 0;
 
     rv = virDirOpenIfExists(&dirp, mon->path);
     if (rv <= 0)
@@ -1893,12 +1896,37 @@ virResctrlMonGetStatistic(virResctrlMonPtr mon,
         goto cleanup;
 
     while ((rv = virDirRead(dirp, &ent, mondatapath)) > 0) {
+        char *pstrid = NULL;
+        size_t i = 0;
+        unsigned int len = 0;
+        unsigned int counter = 0;
+        unsigned int id = 0;
+        unsigned int val = 0;
         VIR_DEBUG("Parsing file '%s'", ent->d_name);
         if (ent->d_type != DT_DIR)
             continue;
 
+        /* mon_L3_xx  */
         if (STRNEQLEN(ent->d_name, "mon_L", 5))
             continue;
+
+        len = strlen(ent->d_name);
+        pstrid = ent->d_name;
+        for (i = 0; i < len; i++) {
+            if (*(pstrid + i) == '_')
+                counter ++;
+            if (counter == 2)
+                break;
+        }
+        i++;
+
+        if (i >= len)
+            goto cleanup;
+
+        if (virStrToLong_uip(pstrid + i, NULL, 0, &id) < 0) {
+            VIR_DEBUG("Cannot parse id from folder '%s'", ent->d_name);
+            goto cleanup;
+        }
 
         rv = virFileReadValueUint(&val,
                                   "%s/%s/%s",
@@ -1914,10 +1942,15 @@ virResctrlMonGetStatistic(virResctrlMonPtr mon,
                 goto cleanup;
         }
 
-        valtotal += val;
+        /* The ultimate caller will be responible for free 'ids' an 'values' */
+        if (VIR_APPEND_ELEMENT(*blockids, ntmpid, id) < 0)
+            goto cleanup;
+        if (VIR_APPEND_ELEMENT(*blockvals, ntmpval, val) < 0)
+            goto cleanup;
+
+        (*nblock)++;
     }
 
-    *value = valtotal;
     ret = 0;
  cleanup:
     VIR_FREE(mondatapath);
@@ -1925,22 +1958,21 @@ virResctrlMonGetStatistic(virResctrlMonPtr mon,
     return ret;
 }
 
+
 int
 virResctrlMonGetCacheOccupancy(virResctrlMonPtr mon,
-                               unsigned int * cacheoccu)
+                               unsigned int *nblock,
+                               unsigned int **blockids,
+                               unsigned int **blockvals)
 {
     const char *cacheoccufile = "llc_occupancy";
-    unsigned int value = 0;
     int ret = - 1;
-
-    *cacheoccu = 0;
 
     ret = virResctrlMonGetStatistic(mon,
                                     cacheoccufile,
-                                    &value);
-    if (ret >= 0)
-        *cacheoccu = value;
-
+                                    nblock,
+                                    blockids,
+                                    blockvals);
     return ret;
 }
 

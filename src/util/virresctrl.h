@@ -152,7 +152,9 @@ virResctrlMonIsRunning(virResctrlMonPtr mon);
 
 int
 virResctrlMonGetCacheOccupancy(virResctrlMonPtr mon,
-                               unsigned int * cacheoccu);
+                               unsigned int *nblock,
+                               unsigned int **blockids,
+                               unsigned int **blockvals);
 
 virResctrlAllocPtr
 virResctrlMonGetAlloc(virResctrlMonPtr mon);
