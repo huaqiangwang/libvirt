@@ -147,13 +147,13 @@ virResctrlInfoDispose(void *obj)
         VIR_FREE(level);
     }
 
-   virStringListFree(resctrl->monitor->features_cache);
-   virStringListFree(resctrl->monitor->features_memory);
-   resctrl->monitor->nfeatures_cache = 0;
-   resctrl->monitor->nfeatures_memory= 0;
+    virStringListFree(resctrl->monitor->features_cache);
+    virStringListFree(resctrl->monitor->features_memory);
+    resctrl->monitor->nfeatures_cache = 0;
+    resctrl->monitor->nfeatures_memory= 0;
 
-   VIR_FREE(resctrl->monitor);
-   VIR_FREE(resctrl->levels);
+    VIR_FREE(resctrl->monitor);
+    VIR_FREE(resctrl->levels);
 }
 
 

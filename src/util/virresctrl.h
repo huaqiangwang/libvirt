@@ -59,7 +59,8 @@ struct _virResctrlInfoMon {
     /* Maximum number of simultaneous allocations */
     unsigned int max_allocation;
     /* Pointer array of feature name supported, could be 'llc_occupancy'
-     * for cache, 'mbm_total_bytes' or 'mbm_local_bytes' for memory*/
+     * for cache features, 'mbm_total_bytes' or 'mbm_local_bytes' for 
+     * memory features*/
     size_t nfeatures_cache;
     char **features_cache;
     size_t nfeatures_memory;
