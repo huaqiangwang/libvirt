@@ -121,6 +121,7 @@ struct _virResctrlInfo {
 
     virResctrlInfoPerLevelPtr *levels;
     size_t nlevels;
+    virResctrlInfoMonPtr monitor;
 };
 
 
@@ -146,7 +147,13 @@ virResctrlInfoDispose(void *obj)
         VIR_FREE(level);
     }
 
-    VIR_FREE(resctrl->levels);
+   virStringListFree(resctrl->monitor->features_cache);
+   virStringListFree(resctrl->monitor->features_memory);
+   resctrl->monitor->nfeatures_cache = 0;
+   resctrl->monitor->nfeatures_memory= 0;
+
+   VIR_FREE(resctrl->monitor);
+   VIR_FREE(resctrl->levels);
 }
 
 
@@ -316,6 +323,110 @@ virResctrlUnlock(int fd)
 }
 
 
+/*virResctrlInfo-related definitions */
+static int
+virResctrlGetInfoMon(virResctrlInfoPtr resctrl,
+                    struct dirent *ent)
+{
+    int rv = -1;
+    char *featurestr;
+    char **lines = NULL;
+    size_t nlines = 0;
+    size_t i = 0;
+    int ret = -1;
+    virResctrlInfoMonPtr monitor;
+
+    if (!ent && !ent->d_name)
+        return -1;
+
+    /* Not the entry intrerested, continue for next entry, no error
+     * returned */
+    if (STREQ(ent->d_name, "L3_MON"))
+        return 0;
+
+    if (!VIR_ALLOC(monitor))
+        return -1;
+
+    rv = virFileReadValueUint(&monitor->max_allocation,
+                              SYSFS_RESCTRL_PATH "/info/%s/num_rmids",
+                              ent->d_name);
+    if (rv == -2) {
+        /* The file doesn't exist, so it's unusable for us,
+         *  but we can scan further */
+        VIR_WARN("The path '" SYSFS_RESCTRL_PATH "/info/%s/num_rmids' "
+                 "does not exist",
+                 ent->d_name);
+    } else if (rv < 0) {
+        /* Other failures are fatal, so just quit */
+        goto error;
+    }
+
+    rv = virFileReadValueUint(&monitor->cache_threshold,
+                              SYSFS_RESCTRL_PATH
+                              "/info/%s/max_threshold_occupancy",
+                              ent->d_name);
+
+    if (rv == -2) {
+        /* If the previous file exists, so should this one.  Hence -2 is
+         * fatal in this case as well (errors out in next condition) */
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Cannot get max_threshold_occupancy from resctrl"
+                         " info"));
+    } else if (rv < 0) {
+        goto error;
+    }
+
+    rv = virFileReadValueString(&featurestr,
+                                SYSFS_RESCTRL_PATH
+                                "/info/%s/mon_features",
+                                ent->d_name);
+    if (rv == -2)
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Cannot get mon_features from resctrl info"));
+    else if (rv < 0)
+        goto error;
+
+    lines = virStringSplitCount(featurestr, "\n", 0, &nlines);
+
+    for (i = 0; i < nlines; i++) {
+        size_t count = 0;
+
+        if (!STREQLEN(lines[i], "llc_", strlen("llc_"))) {
+            count = monitor->nfeatures_cache;
+            if (VIR_EXPAND_N(monitor->features_cache, count, 1) < 0)
+                goto error;
+            monitor->nfeatures_cache = count;
+
+            if (VIR_STRDUP(monitor->features_cache[count - 1], lines[i]) < 0)
+                goto error;
+        } else if (!STREQLEN(lines[i], "mbm_", strlen("mbm_"))) {
+            count = monitor->nfeatures_memory;
+            if (VIR_EXPAND_N(monitor->features_memory, count, 1) < 0)
+                goto error;
+            monitor->nfeatures_memory = count;
+
+            if (VIR_STRDUP(monitor->features_memory[count - 1], lines[i]) < 0)
+                goto error;
+        }
+    }
+
+    VIR_FREE(featurestr);
+    virStringListFree(lines);
+
+    ret = 0;
+    resctrl->monitor = monitor;
+    return ret;
+
+ error:
+    VIR_FREE(featurestr);
+    virStringListFree(lines);
+    virStringListFree(monitor->features_cache);
+    virStringListFree(monitor->features_memory);
+    VIR_FREE(monitor);
+    return ret;
+}
+
+
 /* virResctrlInfo-related definitions */
 static int
 virResctrlGetInfo(virResctrlInfoPtr resctrl)
@@ -340,6 +451,10 @@ virResctrlGetInfo(virResctrlInfoPtr resctrl)
 
     while ((rv = virDirRead(dirp, &ent, SYSFS_RESCTRL_PATH "/info")) > 0) {
         VIR_DEBUG("Parsing info type '%s'", ent->d_name);
+        rv = virResctrlGetInfoMon(resctrl, ent);
+        if (rv == - 1)
+           goto cleanup;
+
         if (ent->d_name[0] != 'L')
             continue;
 
@@ -556,6 +671,13 @@ virResctrlInfoGetCache(virResctrlInfoPtr resctrl,
         VIR_FREE((*controls)[--*ncontrols]);
     VIR_FREE(*controls);
     goto cleanup;
+}
+
+
+virResctrlInfoMonPtr
+virResctrlInfoGetMonitor(virResctrlInfoPtr resctrl)
+{
+    return resctrl->monitor;
 }
 
 
@@ -1612,3 +1734,5 @@ virResctrlAllocRemove(virResctrlAllocPtr alloc)
 
     return ret;
 }
+
+

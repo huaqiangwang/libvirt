@@ -2657,6 +2657,7 @@ virResctrlAllocRemove;
 virResctrlAllocSetID;
 virResctrlAllocSetSize;
 virResctrlInfoGetCache;
+virResctrlInfoGetMonitor;
 virResctrlInfoNew;
 
 

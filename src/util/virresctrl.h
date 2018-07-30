@@ -50,6 +50,22 @@ struct _virResctrlInfoPerCache {
     unsigned int max_allocation;
 };
 
+typedef struct _virResctrlInfoMon virResctrlInfoMon;
+typedef virResctrlInfoMon *virResctrlInfoMonPtr;
+struct _virResctrlInfoMon {
+    /* Largest value (in bytes) at which a previously used LLC_occupancy
+     *counter can be considered for re-use*/
+    unsigned int cache_threshold;
+    /* Maximum number of simultaneous allocations */
+    unsigned int max_allocation;
+    /* Pointer array of feature name supported, could be 'llc_occupancy'
+     * for cache, 'mbm_total_bytes' or 'mbm_local_bytes' for memory*/
+    size_t nfeatures_cache;
+    char **features_cache;
+    size_t nfeatures_memory;
+    char **features_memory;
+};
+
 typedef struct _virResctrlInfo virResctrlInfo;
 typedef virResctrlInfo *virResctrlInfoPtr;
 
@@ -115,5 +131,8 @@ virResctrlAllocAddPID(virResctrlAllocPtr alloc,
 
 int
 virResctrlAllocRemove(virResctrlAllocPtr alloc);
+
+virResctrlInfoMonPtr
+virResctrlInfoGetMonitor(virResctrlInfoPtr resctrl);
 
 #endif /*  __VIR_RESCTRL_H__ */

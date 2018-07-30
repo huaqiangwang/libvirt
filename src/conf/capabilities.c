@@ -866,11 +866,13 @@ virCapabilitiesFormatNUMATopology(virBufferPtr buf,
 static int
 virCapabilitiesFormatCaches(virBufferPtr buf,
                             size_t ncaches,
-                            virCapsHostCacheBankPtr *caches)
+                            virCapsHostCacheBankPtr *caches,
+                            virResctrlInfoPtr resctrl)
 {
     size_t i = 0;
     size_t j = 0;
     virBuffer controlBuf = VIR_BUFFER_INITIALIZER;
+    virResctrlInfoMonPtr monitor = NULL;
 
     if (!ncaches)
         return 0;
@@ -949,6 +951,24 @@ virCapabilitiesFormatCaches(virBufferPtr buf,
         } else {
             virBufferAddLit(buf, "/>\n");
         }
+    }
+
+    monitor = virResctrlInfoGetMonitor(resctrl);
+    if (monitor) {
+        virBufferAsprintf(buf,
+                          "<monitor chcheThreshold='%u' "
+                          "maxAllocs='%u'>\n",
+                          monitor->cache_threshold,
+                          monitor->max_allocation);
+
+        virBufferAdjustIndent(buf, 2);
+        for (i = 0; i < monitor->nfeatures_cache; i++) {
+            virBufferAsprintf(buf,
+                              "<feature name='%s'/>\n",
+                              monitor->features_cache[i]);
+        }
+        virBufferAdjustIndent(buf, -2);
+        virBufferAddLit(buf, "</monitor>\n");
     }
 
     virBufferAdjustIndent(buf, -2);
@@ -1057,7 +1077,8 @@ virCapabilitiesFormatXML(virCapsPtr caps)
         goto error;
 
     if (virCapabilitiesFormatCaches(&buf, caps->host.ncaches,
-                                    caps->host.caches) < 0)
+                                    caps->host.caches,
+                                    caps->host.resctrl) < 0)
         goto error;
 
     for (i = 0; i < caps->host.nsecModels; i++) {
