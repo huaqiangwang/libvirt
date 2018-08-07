@@ -78,9 +78,9 @@ int
 virResctrlInfoGetMemoryBandwidth(virResctrlInfoPtr resctrl,
                                  unsigned int level,
                                  virResctrlInfoMemBWPerNodePtr control);
-/* Alloc-related things */
-typedef struct _virResctrlAlloc virResctrlAlloc;
-typedef virResctrlAlloc *virResctrlAllocPtr;
+/* resource group -related things */
+typedef struct _virResctrlGroup virResctrlGroup;
+typedef virResctrlGroup *virResctrlGroupPtr;
 
 typedef int virResctrlAllocForeachCacheCallback(unsigned int level,
                                                 virCacheType type,
@@ -92,57 +92,57 @@ typedef int virResctrlAllocForeachMemoryCallback(unsigned int id,
                                                  unsigned int size,
                                                  void *opaque);
 
-virResctrlAllocPtr
+virResctrlGroup
 virResctrlAllocNew(void);
 
 bool
-virResctrlAllocIsEmpty(virResctrlAllocPtr alloc);
+virResctrlAllocIsEmpty(virResctrlGroupPtr group);
 
 int
-virResctrlAllocSetCacheSize(virResctrlAllocPtr alloc,
+virResctrlAllocSetCacheSize(virResctrlGroupPtr group,
                             unsigned int level,
                             virCacheType type,
                             unsigned int cache,
                             unsigned long long size);
 
 int
-virResctrlAllocForeachCache(virResctrlAllocPtr alloc,
+virResctrlAllocForeachCache(virResctrlGroupPtr group,
                             virResctrlAllocForeachCacheCallback cb,
                             void *opaque);
 
 int
-virResctrlAllocSetMemoryBandwidth(virResctrlAllocPtr alloc,
+virResctrlAllocSetMemoryBandwidth(virResctrlGroupPtr group,
                                   unsigned int id,
                                   unsigned int memory_bandwidth);
 
 int
-virResctrlAllocForeachMemory(virResctrlAllocPtr resctrl,
+virResctrlAllocForeachMemory(virResctrlGroupPtr resctrl,
                              virResctrlAllocForeachMemoryCallback cb,
                              void *opaque);
 
 int
-virResctrlAllocSetID(virResctrlAllocPtr alloc,
+virResctrlAllocSetID(virResctrlGroupPtr group,
                      const char *id);
 const char *
-virResctrlAllocGetID(virResctrlAllocPtr alloc);
+virResctrlAllocGetID(virResctrlGroupPtr group);
 
 char *
-virResctrlAllocFormat(virResctrlAllocPtr alloc);
+virResctrlAllocFormat(virResctrlGroupPtr group);
 
 int
-virResctrlAllocDeterminePath(virResctrlAllocPtr alloc,
+virResctrlAllocDeterminePath(virResctrlGroupPtr group,
                              const char *machinename);
 
 int
 virResctrlAllocCreate(virResctrlInfoPtr r_info,
-                      virResctrlAllocPtr alloc,
+                      virResctrlGroupPtr group,
                       const char *machinename);
 
 int
-virResctrlAllocAddPID(virResctrlAllocPtr alloc,
+virResctrlAllocAddPID(virResctrlGroupPtr group,
                       pid_t pid);
 
 int
-virResctrlAllocRemove(virResctrlAllocPtr alloc);
+virResctrlAllocRemove(virResctrlGroupPtr group);
 
 #endif /*  __VIR_RESCTRL_H__ */

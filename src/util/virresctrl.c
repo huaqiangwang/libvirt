@@ -1,3 +1,33 @@
+/* Message for refatoring patch
+ * kernel privides CPU resource allocation and monitoring interface through
+ * same resctl filesystem, which is represented by resctrl folders located
+ * in '/sys/fs/resctrl'(generallly). see more detail by reading
+ * https://www.kernel.org/doc/Documentation/x86/intel_rdt_ui.txt
+ * For libvirt resctrl APIs, such as virResctrlAllocRemove,
+ * virResctrlAllocAddPID, virResctrlAllocCreate,
+ * virResctrlAllocDeterminePath, alert the behavior of not only the resctrl
+ * allocation part but also the monitoring part. for example, an PID adding
+ * action through virResctrlAllocAddPID will make llc_occupancy file reporting
+ * some extra cache occupancy information, a refactor of the names will make
+ * these APIs to be used in resctrl monitoring features more reasonably.
+ * This series of patch will add the support of cache monitoring feature, and
+ * this patch aims to make refactoring to reuse the APIS provided for resctrl
+ * allocation features.*/
+/*
+ * In the kernel document (<kernel>/doc/Documentation/x86/intel_rdt_ui.txt),
+ * each directory in resctrl fs is called 'resource group', this is reason for
+ * making such changes:
+ * virResctrlAllocAddPID --> virResctrlGroupAddPID
+ * virResctrlAllocCreate --> virResctrlAllocGroup
+ * ....
+ * as well as these data struction:
+ * _virResctrlAlloc --> _virResctrlGroup
+ * virResctrlAlloc --> virResctrlGroup
+ * virResctrlAllocPtr --> virResctrlGroupPtr
+ *
+ * A subsequent patch will be introduced to make 'virResctrlGroup' more
+ * resonable to cover resctrl allocation and monitoring part.
+ */
 /*
  * virresctrl.c:
  *
@@ -176,15 +206,17 @@ virResctrlInfoDispose(void *obj)
 }
 
 
-/* virResctrlAlloc */
+/* virResctrlGroup */
 
 /*
- * virResctrlAlloc represents one allocation (in XML under cputune/cachetune and
- * consequently a directory under /sys/fs/resctrl).  Since it can have multiple
- * parts of multiple caches allocated it is represented as bunch of nested
- * sparse arrays (by sparse I mean array of pointers so that each might be NULL
- * in case there is no allocation for that particular cache allocation (level,
- * cache, ...) or memory allocation for particular node).
+ * virResctrlGroup represents one resource group (corresponding to one directory
+ * under /sys/fs/resctrl), both allocation and monitoring inerfaces are using
+ * this data structure to track the underlying resource group it processing.
+ * Since it can have multiple parts of multiple CPU resource types allocated it
+ * is represented as bunch of nested sparse arrays (by sparse I mean array of
+ * pointers so that each might be NULL in case there is no allocation for that
+ * particular cache allocation (level, cache, ...) or memory allocation for
+ * particular node).
  *
  * =====Cache allocation technology (CAT)=====
  *
@@ -214,7 +246,7 @@ virResctrlInfoDispose(void *obj)
  + *
  * =====Memory Bandwidth allocation technology (MBA)=====
  *
- * The memory bandwidth allocation support in virResctrlAlloc works in the
+ * The memory bandwidth allocation support in virResctrlGroup works in the
  * same fashion as CAT. However, memory bandwidth controller doesn't have a
  * hierarchy organization as cache, each node have one memory bandwidth
  * controller to memory bandwidth distribution. The number of memory bandwidth
@@ -225,7 +257,7 @@ virResctrlInfoDispose(void *obj)
  */
 struct _virResctrlAllocPerType {
     /* There could be bool saying whether this is set or not, but since everything
-     * in virResctrlAlloc (and most of libvirt) goes with pointer arrays we would
+     * in virResctrlGroup (and most of libvirt) goes with pointer arrays we would
      * have to have one more level of allocation anyway, so this stays faithful to
      * the concept */
     unsigned long long **sizes;
@@ -252,7 +284,7 @@ struct _virResctrlAllocMemBW {
     size_t nbandwidths;
 };
 
-struct _virResctrlAlloc {
+struct _virResctrlGroup {
     virObject parent;
 
     virResctrlAllocPerLevelPtr *levels;
@@ -263,7 +295,7 @@ struct _virResctrlAlloc {
     /* The identifier (any unique string for now) */
     char *id;
     /* libvirt-generated path in /sys/fs/resctrl for this particular
-     * allocation */
+     * */
     char *path;
 };
 
@@ -275,10 +307,10 @@ virResctrlAllocDispose(void *obj)
     size_t j = 0;
     size_t k = 0;
 
-    virResctrlAllocPtr alloc = obj;
+    virResctrlGroupPtr group = obj;
 
-    for (i = 0; i < alloc->nlevels; i++) {
-        virResctrlAllocPerLevelPtr level = alloc->levels[i];
+    for (i = 0; i < group->nlevels; i++) {
+        virResctrlAllocPerLevelPtr level = group->levels[i];
 
         if (!level)
             continue;
@@ -303,16 +335,16 @@ virResctrlAllocDispose(void *obj)
         VIR_FREE(level);
     }
 
-    if (alloc->mem_bw) {
-        virResctrlAllocMemBWPtr mem_bw = alloc->mem_bw;
+    if (group->mem_bw) {
+        virResctrlAllocMemBWPtr mem_bw = group->mem_bw;
         for (i = 0; i < mem_bw->nbandwidths; i++)
             VIR_FREE(mem_bw->bandwidths[i]);
-        VIR_FREE(alloc->mem_bw);
+        VIR_FREE(group->mem_bw);
     }
 
-    VIR_FREE(alloc->id);
-    VIR_FREE(alloc->path);
-    VIR_FREE(alloc->levels);
+    VIR_FREE(group->id);
+    VIR_FREE(group->path);
+    VIR_FREE(group->levels);
 }
 
 
@@ -728,7 +760,7 @@ virResctrlInfoGetCache(virResctrlInfoPtr resctrl,
 
 
 /* virResctrlAlloc-related definitions */
-virResctrlAllocPtr
+virResctrlGroupPtr
 virResctrlAllocNew(void)
 {
     if (virResctrlInitialize() < 0)
@@ -739,20 +771,20 @@ virResctrlAllocNew(void)
 
 
 bool
-virResctrlAllocIsEmpty(virResctrlAllocPtr alloc)
+virResctrlAllocIsEmpty(virResctrlGroupPtr group)
 {
     size_t i = 0;
     size_t j = 0;
     size_t k = 0;
 
-    if (!alloc)
+    if (!group)
         return true;
 
-    if (alloc->mem_bw)
+    if (group->mem_bw)
         return false;
 
-    for (i = 0; i < alloc->nlevels; i++) {
-        virResctrlAllocPerLevelPtr a_level = alloc->levels[i];
+    for (i = 0; i < group->nlevels; i++) {
+        virResctrlAllocPerLevelPtr a_level = group->levels[i];
 
         if (!a_level)
             continue;
@@ -780,30 +812,30 @@ virResctrlAllocIsEmpty(virResctrlAllocPtr alloc)
 
 
 static virResctrlAllocPerTypePtr
-virResctrlAllocGetType(virResctrlAllocPtr alloc,
+virResctrlAllocGetType(virResctrlGroupPtr group,
                        unsigned int level,
                        virCacheType type)
 {
     virResctrlAllocPerLevelPtr a_level = NULL;
 
-    if (alloc->nlevels <= level &&
-        VIR_EXPAND_N(alloc->levels, alloc->nlevels, level - alloc->nlevels + 1) < 0)
+    if (group->nlevels <= level &&
+        VIR_EXPAND_N(group->levels, group->nlevels, level - group->nlevels + 1) < 0)
         return NULL;
 
-    if (!alloc->levels[level]) {
+    if (!group->levels[level]) {
         virResctrlAllocPerTypePtr *types = NULL;
 
         if (VIR_ALLOC_N(types, VIR_CACHE_TYPE_LAST) < 0)
             return NULL;
 
-        if (VIR_ALLOC(alloc->levels[level]) < 0) {
+        if (VIR_ALLOC(group->levels[level]) < 0) {
             VIR_FREE(types);
             return NULL;
         }
-        alloc->levels[level]->types = types;
+        group->levels[level]->types = types;
     }
 
-    a_level = alloc->levels[level];
+    a_level = group->levels[level];
 
     if (!a_level->types[type] && VIR_ALLOC(a_level->types[type]) < 0)
         return NULL;
@@ -813,13 +845,13 @@ virResctrlAllocGetType(virResctrlAllocPtr alloc,
 
 
 static int
-virResctrlAllocUpdateMask(virResctrlAllocPtr alloc,
+virResctrlAllocUpdateMask(virResctrlGroupPtr group,
                           unsigned int level,
                           virCacheType type,
                           unsigned int cache,
                           virBitmapPtr mask)
 {
-    virResctrlAllocPerTypePtr a_type = virResctrlAllocGetType(alloc, level, type);
+    virResctrlAllocPerTypePtr a_type = virResctrlAllocGetType(group, level, type);
 
     if (!a_type)
         return -1;
@@ -841,13 +873,13 @@ virResctrlAllocUpdateMask(virResctrlAllocPtr alloc,
 
 
 static int
-virResctrlAllocUpdateSize(virResctrlAllocPtr alloc,
+virResctrlAllocUpdateSize(virResctrlGroupPtr group,
                           unsigned int level,
                           virCacheType type,
                           unsigned int cache,
                           unsigned long long size)
 {
-    virResctrlAllocPerTypePtr a_type = virResctrlAllocGetType(alloc, level, type);
+    virResctrlAllocPerTypePtr a_type = virResctrlAllocGetType(group, level, type);
 
     if (!a_type)
         return -1;
@@ -870,14 +902,14 @@ virResctrlAllocUpdateSize(virResctrlAllocPtr alloc,
  * Check if there is an allocation for this level/type/cache already.  Called
  * before updating the structure.  VIR_CACHE_TYPE_BOTH collides with any type,
  * the other types collide with itself.  This code basically checks if either:
- * `alloc[level]->types[type]->sizes[cache]`
+ * `levels[level]->types[type]->sizes[cache]`
  * or
- * `alloc[level]->types[VIR_CACHE_TYPE_BOTH]->sizes[cache]`
+ * `levels[level]->types[VIR_CACHE_TYPE_BOTH]->sizes[cache]`
  * is non-NULL.  All the fuzz around it is checking for NULL pointers along
  * the way.
  */
 static bool
-virResctrlAllocCheckCollision(virResctrlAllocPtr alloc,
+virResctrlAllocCheckCollision(virResctrlGroupPtr group,
                               unsigned int level,
                               virCacheType type,
                               unsigned int cache)
@@ -885,13 +917,13 @@ virResctrlAllocCheckCollision(virResctrlAllocPtr alloc,
     virResctrlAllocPerLevelPtr a_level = NULL;
     virResctrlAllocPerTypePtr a_type = NULL;
 
-    if (!alloc)
+    if (!group)
         return false;
 
-    if (alloc->nlevels <= level)
+    if (group->nlevels <= level)
         return false;
 
-    a_level = alloc->levels[level];
+    a_level = group->levels[level];
 
     if (!a_level)
         return false;
@@ -925,13 +957,13 @@ virResctrlAllocCheckCollision(virResctrlAllocPtr alloc,
 
 
 int
-virResctrlAllocSetCacheSize(virResctrlAllocPtr alloc,
+virResctrlAllocSetCacheSize(virResctrlGroupPtr group,
                             unsigned int level,
                             virCacheType type,
                             unsigned int cache,
                             unsigned long long size)
 {
-    if (virResctrlAllocCheckCollision(alloc, level, type, cache)) {
+    if (virResctrlAllocCheckCollision(group, level, type, cache)) {
         virReportError(VIR_ERR_XML_ERROR,
                        _("Colliding cache allocations for cache "
                          "level '%u' id '%u', type '%s'"),
@@ -939,12 +971,12 @@ virResctrlAllocSetCacheSize(virResctrlAllocPtr alloc,
         return -1;
     }
 
-    return virResctrlAllocUpdateSize(alloc, level, type, cache, size);
+    return virResctrlAllocUpdateSize(group, level, type, cache, size);
 }
 
 
 int
-virResctrlAllocForeachCache(virResctrlAllocPtr alloc,
+virResctrlAllocForeachCache(virResctrlGroupPtr group,
                             virResctrlAllocForeachCacheCallback cb,
                             void *opaque)
 {
@@ -953,11 +985,11 @@ virResctrlAllocForeachCache(virResctrlAllocPtr alloc,
     unsigned int type = 0;
     unsigned int cache = 0;
 
-    if (!alloc)
+    if (!group)
         return 0;
 
-    for (level = 0; level < alloc->nlevels; level++) {
-        virResctrlAllocPerLevelPtr a_level = alloc->levels[level];
+    for (level = 0; level < group->nlevels; level++) {
+        virResctrlAllocPerLevelPtr a_level = group->levels[level];
 
         if (!a_level)
             continue;
@@ -986,20 +1018,20 @@ virResctrlAllocForeachCache(virResctrlAllocPtr alloc,
 
 
 /* virResctrlAllocSetMemoryBandwidth
- * @alloc: Pointer to an active allocation
+ * @group: Pointer to an active resource group 
  * @id: node id of MBA to be set
  * @memory_bandwidth: new memory bandwidth value
  *
- * Set the @memory_bandwidth for the node @id entry in the @alloc.
+ * Set the @memory_bandwidth for the node @id entry in the @group.
  *
  * Returns 0 on success, -1 on failure with error message set.
  */
 int
-virResctrlAllocSetMemoryBandwidth(virResctrlAllocPtr alloc,
+virResctrlAllocSetMemoryBandwidth(virResctrlGroupPtr group,
                                   unsigned int id,
                                   unsigned int memory_bandwidth)
 {
-    virResctrlAllocMemBWPtr mem_bw = alloc->mem_bw;
+    virResctrlAllocMemBWPtr mem_bw = group->mem_bw;
 
     if (memory_bandwidth > 100) {
         virReportError(VIR_ERR_XML_ERROR, "%s",
@@ -1010,7 +1042,7 @@ virResctrlAllocSetMemoryBandwidth(virResctrlAllocPtr alloc,
     if (!mem_bw) {
         if (VIR_ALLOC(mem_bw) < 0)
             return -1;
-        alloc->mem_bw = mem_bw;
+        group->mem_bw = mem_bw;
     }
 
     if (mem_bw->nbandwidths <= id &&
@@ -1034,7 +1066,7 @@ virResctrlAllocSetMemoryBandwidth(virResctrlAllocPtr alloc,
 
 
 /* virResctrlAllocForeachMemory
- * @alloc: Pointer to an active allocation
+ * @group: Pointer to an active resouce group 
  * @cb: Callback function
  * @opaque: Opaque data to be passed to @cb
  *
@@ -1044,17 +1076,17 @@ virResctrlAllocSetMemoryBandwidth(virResctrlAllocPtr alloc,
  * Returns 0 on success, -1 and immediate failure if the @cb has any failure.
  */
 int
-virResctrlAllocForeachMemory(virResctrlAllocPtr alloc,
+virResctrlAllocForeachMemory(virResctrlGroupPtr group,
                              virResctrlAllocForeachMemoryCallback cb,
                              void *opaque)
 {
     size_t i = 0;
     virResctrlAllocMemBWPtr mem_bw;
 
-    if (!alloc || !alloc->mem_bw)
+    if (!group || !group->mem_bw)
         return 0;
 
-    mem_bw = alloc->mem_bw;
+    mem_bw = group->mem_bw;
     for (i = 0; i < mem_bw->nbandwidths; i++) {
         if (mem_bw->bandwidths[i]) {
             if (cb(i, *mem_bw->bandwidths[i], opaque) < 0)
@@ -1067,23 +1099,23 @@ virResctrlAllocForeachMemory(virResctrlAllocPtr alloc,
 
 
 int
-virResctrlAllocSetID(virResctrlAllocPtr alloc,
+virResctrlAllocSetID(virResctrlGroupPtr group,
                      const char *id)
 {
     if (!id) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Resctrl allocation 'id' cannot be NULL"));
+                       _("Resource group 'id' cannot be NULL"));
         return -1;
     }
 
-    return VIR_STRDUP(alloc->id, id);
+    return VIR_STRDUP(group->id, id);
 }
 
 
 const char *
-virResctrlAllocGetID(virResctrlAllocPtr alloc)
+virResctrlAllocGetID(virResctrlGroupPtr group)
 {
-    return alloc->id;
+    return group->id;
 }
 
 
@@ -1097,20 +1129,20 @@ virResctrlAllocGetID(virResctrlAllocPtr alloc)
  * has 100 percent bandwidth
  */
 static int
-virResctrlAllocMemoryBandwidthFormat(virResctrlAllocPtr alloc,
+virResctrlAllocMemoryBandwidthFormat(virResctrlGroupPtr group,
                                      virBufferPtr buf)
 {
     size_t i;
 
-    if (!alloc->mem_bw)
+    if (!group->mem_bw)
         return 0;
 
     virBufferAddLit(buf, "MB:");
 
-    for (i = 0; i < alloc->mem_bw->nbandwidths; i++) {
-        if (alloc->mem_bw->bandwidths[i]) {
+    for (i = 0; i < group->mem_bw->nbandwidths; i++) {
+        if (group->mem_bw->bandwidths[i]) {
             virBufferAsprintf(buf, "%zd=%u;", i,
-                              *(alloc->mem_bw->bandwidths[i]));
+                              *(group->mem_bw->bandwidths[i]));
         }
     }
 
@@ -1122,7 +1154,7 @@ virResctrlAllocMemoryBandwidthFormat(virResctrlAllocPtr alloc,
 
 static int
 virResctrlAllocParseProcessMemoryBandwidth(virResctrlInfoPtr resctrl,
-                                           virResctrlAllocPtr alloc,
+                                           virResctrlGroupPtr group,
                                            char *mem_bw)
 {
     unsigned int bandwidth;
@@ -1152,17 +1184,17 @@ virResctrlAllocParseProcessMemoryBandwidth(virResctrlInfoPtr resctrl,
                          "memory bandwidth node '%u'"), id);
         return -1;
     }
-    if (alloc->mem_bw->nbandwidths <= id &&
-        VIR_EXPAND_N(alloc->mem_bw->bandwidths, alloc->mem_bw->nbandwidths,
-                     id - alloc->mem_bw->nbandwidths + 1) < 0) {
+    if (group->mem_bw->nbandwidths <= id &&
+        VIR_EXPAND_N(group->mem_bw->bandwidths, group->mem_bw->nbandwidths,
+                     id - group->mem_bw->nbandwidths + 1) < 0) {
         return -1;
     }
-    if (!alloc->mem_bw->bandwidths[id]) {
-        if (VIR_ALLOC(alloc->mem_bw->bandwidths[id]) < 0)
+    if (!group->mem_bw->bandwidths[id]) {
+        if (VIR_ALLOC(group->mem_bw->bandwidths[id]) < 0)
             return -1;
     }
 
-    *(alloc->mem_bw->bandwidths[id]) = bandwidth;
+    *(group->mem_bw->bandwidths[id]) = bandwidth;
     return 0;
 }
 
@@ -1172,7 +1204,7 @@ virResctrlAllocParseProcessMemoryBandwidth(virResctrlInfoPtr resctrl,
  */
 static int
 virResctrlAllocParseMemoryBandwidthLine(virResctrlInfoPtr resctrl,
-                                        virResctrlAllocPtr alloc,
+                                        virResctrlGroupPtr group,
                                         char *line)
 {
     char **mbs = NULL;
@@ -1195,8 +1227,8 @@ virResctrlAllocParseMemoryBandwidthLine(virResctrlInfoPtr resctrl,
                          "memory bandwidth allocation"));
     }
 
-    if (!alloc->mem_bw) {
-        if (VIR_ALLOC(alloc->mem_bw) < 0)
+    if (!group->mem_bw) {
+        if (VIR_ALLOC(group->mem_bw) < 0)
             return -1;
     }
 
@@ -1210,7 +1242,7 @@ virResctrlAllocParseMemoryBandwidthLine(virResctrlInfoPtr resctrl,
         return 0;
 
     for (i = 0; i < nmbs; i++) {
-        if (virResctrlAllocParseProcessMemoryBandwidth(resctrl, alloc, mbs[i]) < 0)
+        if (virResctrlAllocParseProcessMemoryBandwidth(resctrl, group, mbs[i]) < 0)
             goto cleanup;
     }
     ret = 0;
@@ -1221,15 +1253,15 @@ virResctrlAllocParseMemoryBandwidthLine(virResctrlInfoPtr resctrl,
 
 
 static int
-virResctrlAllocFormatCache(virResctrlAllocPtr alloc,
+virResctrlAllocFormatCache(virResctrlGroupPtr group,
                            virBufferPtr buf)
 {
     unsigned int level = 0;
     unsigned int type = 0;
     unsigned int cache = 0;
 
-    for (level = 0; level < alloc->nlevels; level++) {
-        virResctrlAllocPerLevelPtr a_level = alloc->levels[level];
+    for (level = 0; level < group->nlevels; level++) {
+        virResctrlAllocPerLevelPtr a_level = group->levels[level];
 
         if (!a_level)
             continue;
@@ -1267,19 +1299,19 @@ virResctrlAllocFormatCache(virResctrlAllocPtr alloc,
 
 
 char *
-virResctrlAllocFormat(virResctrlAllocPtr alloc)
+virResctrlAllocFormat(virResctrlGroupPtr group)
 {
     virBuffer buf = VIR_BUFFER_INITIALIZER;
 
-    if (!alloc)
+    if (!group)
         return NULL;
 
-    if (virResctrlAllocFormatCache(alloc, &buf) < 0) {
+    if (virResctrlAllocFormatCache(group, &buf) < 0) {
         virBufferFreeAndReset(&buf);
         return NULL;
     }
 
-    if (virResctrlAllocMemoryBandwidthFormat(alloc, &buf) < 0) {
+    if (virResctrlAllocMemoryBandwidthFormat(group, &buf) < 0) {
         virBufferFreeAndReset(&buf);
         return NULL;
     }
@@ -1290,7 +1322,7 @@ virResctrlAllocFormat(virResctrlAllocPtr alloc)
 
 static int
 virResctrlAllocParseProcessCache(virResctrlInfoPtr resctrl,
-                                 virResctrlAllocPtr alloc,
+                                 virResctrlGroupPtr group,
                                  unsigned int level,
                                  virCacheType type,
                                  char *cache)
@@ -1329,7 +1361,7 @@ virResctrlAllocParseProcessCache(virResctrlInfoPtr resctrl,
 
     virBitmapShrink(mask, resctrl->levels[level]->types[type]->bits);
 
-    if (virResctrlAllocUpdateMask(alloc, level, type, cache_id, mask) < 0)
+    if (virResctrlAllocUpdateMask(group, level, type, cache_id, mask) < 0)
         goto cleanup;
 
     ret = 0;
@@ -1341,7 +1373,7 @@ virResctrlAllocParseProcessCache(virResctrlInfoPtr resctrl,
 
 static int
 virResctrlAllocParseCacheLine(virResctrlInfoPtr resctrl,
-                              virResctrlAllocPtr alloc,
+                              virResctrlGroupPtr group,
                               char *line)
 {
     char **caches = NULL;
@@ -1387,7 +1419,7 @@ virResctrlAllocParseCacheLine(virResctrlInfoPtr resctrl,
         return 0;
 
     for (i = 0; i < ncaches; i++) {
-        if (virResctrlAllocParseProcessCache(resctrl, alloc, level, type, caches[i]) < 0)
+        if (virResctrlAllocParseProcessCache(resctrl, group, level, type, caches[i]) < 0)
             goto cleanup;
     }
 
@@ -1400,7 +1432,7 @@ virResctrlAllocParseCacheLine(virResctrlInfoPtr resctrl,
 
 static int
 virResctrlAllocParse(virResctrlInfoPtr resctrl,
-                     virResctrlAllocPtr alloc,
+                     virResctrlGroupPtr group,
                      const char *schemata)
 {
     char **lines = NULL;
@@ -1410,9 +1442,9 @@ virResctrlAllocParse(virResctrlInfoPtr resctrl,
 
     lines = virStringSplitCount(schemata, "\n", 0, &nlines);
     for (i = 0; i < nlines; i++) {
-        if (virResctrlAllocParseCacheLine(resctrl, alloc, lines[i]) < 0)
+        if (virResctrlAllocParseCacheLine(resctrl, group, lines[i]) < 0)
             goto cleanup;
-        if (virResctrlAllocParseMemoryBandwidthLine(resctrl, alloc, lines[i]) < 0)
+        if (virResctrlAllocParseMemoryBandwidthLine(resctrl, group, lines[i]) < 0)
             goto cleanup;
 
     }
@@ -1427,7 +1459,7 @@ virResctrlAllocParse(virResctrlInfoPtr resctrl,
 static int
 virResctrlAllocGetGroup(virResctrlInfoPtr resctrl,
                         const char *groupname,
-                        virResctrlAllocPtr *alloc)
+                        virResctrlGroupPtr *group)
 {
     char *schemata = NULL;
     int rv = virFileReadValueString(&schemata,
@@ -1435,16 +1467,16 @@ virResctrlAllocGetGroup(virResctrlInfoPtr resctrl,
                                      "/%s/schemata",
                                      groupname);
 
-    *alloc = NULL;
+    *group = NULL;
 
     if (rv < 0)
         return rv;
 
-    *alloc = virResctrlAllocNew();
-    if (!*alloc)
+    *group = virResctrlAllocNew();
+    if (!*group)
         goto error;
 
-    if (virResctrlAllocParse(resctrl, *alloc, schemata) < 0)
+    if (virResctrlAllocParse(resctrl, *group, schemata) < 0)
         goto error;
 
     VIR_FREE(schemata);
@@ -1452,16 +1484,16 @@ virResctrlAllocGetGroup(virResctrlInfoPtr resctrl,
 
  error:
     VIR_FREE(schemata);
-    virObjectUnref(*alloc);
-    *alloc = NULL;
+    virObjectUnref(*group);
+    *group = NULL;
     return -1;
 }
 
 
-static virResctrlAllocPtr
+static virResctrlGroupPtr
 virResctrlAllocGetDefault(virResctrlInfoPtr resctrl)
 {
-    virResctrlAllocPtr ret = NULL;
+    virResctrlGroupPtr ret = NULL;
     int rv = virResctrlAllocGetGroup(resctrl, ".", &ret);
 
     if (rv == -2) {
@@ -1490,8 +1522,8 @@ virResctrlAllocSubtractPerType(virResctrlAllocPerTypePtr dst,
 
 
 static void
-virResctrlAllocSubtract(virResctrlAllocPtr dst,
-                        virResctrlAllocPtr src)
+virResctrlAllocSubtract(virResctrlGroupPtr dst,
+                        virResctrlGroupPtr src)
 {
     size_t i = 0;
     size_t j = 0;
@@ -1511,8 +1543,8 @@ virResctrlAllocSubtract(virResctrlAllocPtr dst,
 
 
 static void
-virResctrlMemoryBandwidthSubtract(virResctrlAllocPtr free,
-                                  virResctrlAllocPtr used)
+virResctrlMemoryBandwidthSubtract(virResctrlGroupPtr free,
+                                  virResctrlGroupPtr used)
 {
     size_t i;
 
@@ -1526,13 +1558,13 @@ virResctrlMemoryBandwidthSubtract(virResctrlAllocPtr free,
 }
 
 
-static virResctrlAllocPtr
+static virResctrlGroupPtr
 virResctrlAllocNewFromInfo(virResctrlInfoPtr info)
 {
     size_t i = 0;
     size_t j = 0;
     size_t k = 0;
-    virResctrlAllocPtr ret = virResctrlAllocNew();
+    virResctrlGroupPtr ret = virResctrlAllocNew();
     virBitmapPtr mask = NULL;
 
     if (!ret)
@@ -1589,7 +1621,7 @@ virResctrlAllocNewFromInfo(virResctrlInfoPtr info)
 }
 
 /*
- * This function creates an allocation that represents all unused parts of
+ * This function creates an resource group that represents all unused parts of
  * all caches and memory bandwidth in the system. It uses virResctrlInfo
  * for creating a new full allocation with all bits set (using the
  * virResctrlAllocNewFromInfo()), sets memory bandwidth 100%, and then scans
@@ -1599,11 +1631,11 @@ virResctrlAllocNewFromInfo(virResctrlInfoPtr info)
  * available memory bandwidth for MBA. It is used for two things, calculating
  * the masks and bandwidth available when creating allocations and from tests.
  */
-virResctrlAllocPtr
+virResctrlGroupPtr
 virResctrlAllocGetUnused(virResctrlInfoPtr resctrl)
 {
-    virResctrlAllocPtr ret = NULL;
-    virResctrlAllocPtr alloc = NULL;
+    virResctrlGroupPtr ret = NULL;
+    virResctrlGroupPtr group = NULL;
     struct dirent *ent = NULL;
     DIR *dirp = NULL;
     int rv = -1;
@@ -1618,12 +1650,12 @@ virResctrlAllocGetUnused(virResctrlInfoPtr resctrl)
     if (!ret)
         return NULL;
 
-    alloc = virResctrlAllocGetDefault(resctrl);
-    if (!alloc)
+    group = virResctrlAllocGetDefault(resctrl);
+    if (!group)
         goto error;
 
-    virResctrlAllocSubtract(ret, alloc);
-    virObjectUnref(alloc);
+    virResctrlAllocSubtract(ret, group);
+    virObjectUnref(group);
 
     if (virDirOpen(&dirp, SYSFS_RESCTRL_PATH) < 0)
         goto error;
@@ -1632,7 +1664,7 @@ virResctrlAllocGetUnused(virResctrlInfoPtr resctrl)
         if (STREQ(ent->d_name, "info"))
             continue;
 
-        rv = virResctrlAllocGetGroup(resctrl, ent->d_name, &alloc);
+        rv = virResctrlAllocGetGroup(resctrl, ent->d_name, &group);
         if (rv == -2)
             continue;
 
@@ -1643,16 +1675,16 @@ virResctrlAllocGetUnused(virResctrlInfoPtr resctrl)
             goto error;
         }
 
-        virResctrlMemoryBandwidthSubtract(ret, alloc);
-        virResctrlAllocSubtract(ret, alloc);
-        virObjectUnref(alloc);
-        alloc = NULL;
+        virResctrlMemoryBandwidthSubtract(ret, group);
+        virResctrlAllocSubtract(ret, group);
+        virObjectUnref(group);
+        group = NULL;
     }
     if (rv < 0)
         goto error;
 
  cleanup:
-    virObjectUnref(alloc);
+    virObjectUnref(group);
     VIR_DIR_CLOSE(dirp);
     return ret;
 
@@ -1671,17 +1703,17 @@ virResctrlAllocGetUnused(virResctrlInfoPtr resctrl)
  * order to minimize fragmentation and maximize the possibility of succeeding.
  *
  * Per-cache allocation for the @level, @type and @cache must already be
- * allocated for @alloc (does not have to exist though).
+ * allocated for @group (does not have to exist though).
  */
 static int
-virResctrlAllocFindUnused(virResctrlAllocPtr alloc,
+virResctrlAllocFindUnused(virResctrlGroupPtr group,
                           virResctrlInfoPerTypePtr i_type,
                           virResctrlAllocPerTypePtr f_type,
                           unsigned int level,
                           unsigned int type,
                           unsigned int cache)
 {
-    unsigned long long *size = alloc->levels[level]->types[type]->sizes[cache];
+    unsigned long long *size = group->levels[level]->types[type]->sizes[cache];
     virBitmapPtr a_mask = NULL;
     virBitmapPtr f_mask = NULL;
     unsigned long long need_bits;
@@ -1784,7 +1816,7 @@ virResctrlAllocFindUnused(virResctrlAllocPtr alloc,
     for (i = last_pos; i < last_pos + need_bits; i++)
         ignore_value(virBitmapSetBit(a_mask, i));
 
-    if (virResctrlAllocUpdateMask(alloc, level, type, cache, a_mask) < 0)
+    if (virResctrlAllocUpdateMask(group, level, type, cache, a_mask) < 0)
         goto cleanup;
 
     ret = 0;
@@ -1796,11 +1828,11 @@ virResctrlAllocFindUnused(virResctrlAllocPtr alloc,
 
 static int
 virResctrlAllocMemoryBandwidth(virResctrlInfoPtr resctrl,
-                               virResctrlAllocPtr alloc,
-                               virResctrlAllocPtr free)
+                               virResctrlGroupPtr group,
+                               virResctrlGroupPtr free)
 {
     size_t i;
-    virResctrlAllocMemBWPtr mem_bw_alloc = alloc->mem_bw;
+    virResctrlAllocMemBWPtr mem_bw_alloc = group->mem_bw;
     virResctrlAllocMemBWPtr mem_bw_free = free->mem_bw;
     virResctrlInfoMemBWPtr mem_bw_info = resctrl->membw_info;
 
@@ -1855,8 +1887,8 @@ virResctrlAllocMemoryBandwidth(virResctrlInfoPtr resctrl,
 
 
 static int
-virResctrlAllocCopyMasks(virResctrlAllocPtr dst,
-                         virResctrlAllocPtr src)
+virResctrlAllocCopyMasks(virResctrlGroupPtr dst,
+                         virResctrlGroupPtr src)
 {
     unsigned int level = 0;
 
@@ -1900,37 +1932,37 @@ virResctrlAllocCopyMasks(virResctrlAllocPtr dst,
  */
 static int
 virResctrlAllocAssign(virResctrlInfoPtr resctrl,
-                      virResctrlAllocPtr alloc)
+                      virResctrlGroupPtr group)
 {
     int ret = -1;
     unsigned int level = 0;
-    virResctrlAllocPtr alloc_free = NULL;
-    virResctrlAllocPtr alloc_default = NULL;
+    virResctrlGroupPtr group_free = NULL;
+    virResctrlGroupPtr group_default = NULL;
 
-    alloc_free = virResctrlAllocGetUnused(resctrl);
-    if (!alloc_free)
+    group_free = virResctrlAllocGetUnused(resctrl);
+    if (!group_free)
         return -1;
 
-    alloc_default = virResctrlAllocGetDefault(resctrl);
-    if (!alloc_default)
+    group_default = virResctrlAllocGetDefault(resctrl);
+    if (!group_default)
         goto cleanup;
 
-    if (virResctrlAllocMemoryBandwidth(resctrl, alloc, alloc_free) < 0)
+    if (virResctrlAllocMemoryBandwidth(resctrl, group, group_free) < 0)
         goto cleanup;
 
-    if (virResctrlAllocCopyMasks(alloc, alloc_default) < 0)
+    if (virResctrlAllocCopyMasks(group, group_default) < 0)
         goto cleanup;
 
-    for (level = 0; level < alloc->nlevels; level++) {
-        virResctrlAllocPerLevelPtr a_level = alloc->levels[level];
+    for (level = 0; level < group->nlevels; level++) {
+        virResctrlAllocPerLevelPtr a_level = group->levels[level];
         virResctrlAllocPerLevelPtr f_level = NULL;
         unsigned int type = 0;
 
         if (!a_level)
             continue;
 
-        if (level < alloc_free->nlevels)
-            f_level = alloc_free->levels[level];
+        if (level < group_free->nlevels)
+            f_level = group_free->levels[level];
 
         if (!f_level) {
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
@@ -1959,7 +1991,7 @@ virResctrlAllocAssign(virResctrlInfoPtr resctrl,
                 virResctrlInfoPerLevelPtr i_level = resctrl->levels[level];
                 virResctrlInfoPerTypePtr i_type = i_level->types[type];
 
-                if (virResctrlAllocFindUnused(alloc, i_type, f_type, level, type, cache) < 0)
+                if (virResctrlAllocFindUnused(group, i_type, f_type, level, type, cache) < 0)
                     goto cleanup;
             }
         }
@@ -1967,44 +1999,44 @@ virResctrlAllocAssign(virResctrlInfoPtr resctrl,
 
     ret = 0;
  cleanup:
-    virObjectUnref(alloc_free);
-    virObjectUnref(alloc_default);
+    virObjectUnref(group_free);
+    virObjectUnref(group_default);
     return ret;
 }
 
 
 int
-virResctrlAllocDeterminePath(virResctrlAllocPtr alloc,
+virResctrlAllocDeterminePath(virResctrlGroupPtr group,
                              const char *machinename)
 {
-    if (!alloc->id) {
+    if (!group->id) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                        _("Resctrl Allocation ID must be set before creation"));
         return -1;
     }
 
-    if (!alloc->path &&
-        virAsprintf(&alloc->path, "%s/%s-%s",
-                    SYSFS_RESCTRL_PATH, machinename, alloc->id) < 0)
+    if (!group->path &&
+        virAsprintf(&group->path, "%s/%s-%s",
+                    SYSFS_RESCTRL_PATH, machinename, group->id) < 0)
         return -1;
 
     return 0;
 }
 
 
-/* This checks if the directory for the alloc exists.  If not it tries to create
- * it and apply appropriate alloc settings. */
+/* This checks if the directory for the group exists.  If not it tries to create
+ * it and apply appropriate group settings. */
 int
 virResctrlAllocCreate(virResctrlInfoPtr resctrl,
-                      virResctrlAllocPtr alloc,
+                      virResctrlGroupPtr group,
                       const char *machinename)
 {
     char *schemata_path = NULL;
-    char *alloc_str = NULL;
+    char *group_str = NULL;
     int ret = -1;
     int lockfd = -1;
 
-    if (!alloc)
+    if (!group)
         return 0;
 
     if (virResctrlInfoIsEmpty(resctrl)) {
@@ -2013,13 +2045,13 @@ virResctrlAllocCreate(virResctrlInfoPtr resctrl,
         return -1;
     }
 
-    if (virResctrlAllocDeterminePath(alloc, machinename) < 0)
+    if (virResctrlAllocDeterminePath(group, machinename) < 0)
         return -1;
 
-    if (virFileExists(alloc->path)) {
+    if (virFileExists(group->path)) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("Path '%s' for resctrl allocation exists"),
-                       alloc->path);
+                       _("Path '%s' for resource group exists"),
+                       group->path);
         goto cleanup;
     }
 
@@ -2027,26 +2059,26 @@ virResctrlAllocCreate(virResctrlInfoPtr resctrl,
     if (lockfd < 0)
         goto cleanup;
 
-    if (virResctrlAllocAssign(resctrl, alloc) < 0)
+    if (virResctrlAllocAssign(resctrl, group) < 0)
         goto cleanup;
 
-    alloc_str = virResctrlAllocFormat(alloc);
-    if (!alloc_str)
+    group_str = virResctrlAllocFormat(group);
+    if (!group_str)
         goto cleanup;
 
-    if (virAsprintf(&schemata_path, "%s/schemata", alloc->path) < 0)
+    if (virAsprintf(&schemata_path, "%s/schemata", group->path) < 0)
         goto cleanup;
 
-    if (virFileMakePath(alloc->path) < 0) {
+    if (virFileMakePath(group->path) < 0) {
         virReportSystemError(errno,
                              _("Cannot create resctrl directory '%s'"),
-                             alloc->path);
+                             group->path);
         goto cleanup;
     }
 
-    VIR_DEBUG("Writing resctrl schemata '%s' into '%s'", alloc_str, schemata_path);
-    if (virFileWriteStr(schemata_path, alloc_str, 0) < 0) {
-        rmdir(alloc->path);
+    VIR_DEBUG("Writing resctrl schemata '%s' into '%s'", group_str, schemata_path);
+    if (virFileWriteStr(schemata_path, group_str, 0) < 0) {
+        rmdir(group->path);
         virReportSystemError(errno,
                              _("Cannot write into schemata file '%s'"),
                              schemata_path);
@@ -2056,27 +2088,27 @@ virResctrlAllocCreate(virResctrlInfoPtr resctrl,
     ret = 0;
  cleanup:
     virResctrlUnlock(lockfd);
-    VIR_FREE(alloc_str);
+    VIR_FREE(group_str);
     VIR_FREE(schemata_path);
     return ret;
 }
 
 
 int
-virResctrlAllocAddPID(virResctrlAllocPtr alloc,
+virResctrlAllocAddPID(virResctrlGroupPtr group,
                       pid_t pid)
 {
     char *tasks = NULL;
     char *pidstr = NULL;
     int ret = 0;
 
-    if (!alloc->path) {
+    if (!group->path) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                        _("Cannot add pid to non-existing resctrl allocation"));
         return -1;
     }
 
-    if (virAsprintf(&tasks, "%s/tasks", alloc->path) < 0)
+    if (virAsprintf(&tasks, "%s/tasks", group->path) < 0)
         return -1;
 
     if (virAsprintf(&pidstr, "%lld", (long long int) pid) < 0)
@@ -2098,17 +2130,17 @@ virResctrlAllocAddPID(virResctrlAllocPtr alloc,
 
 
 int
-virResctrlAllocRemove(virResctrlAllocPtr alloc)
+virResctrlAllocRemove(virResctrlGroupPtr group)
 {
     int ret = 0;
 
-    if (!alloc->path)
+    if (!group->path)
         return 0;
 
-    VIR_DEBUG("Removing resctrl allocation %s", alloc->path);
-    if (rmdir(alloc->path) != 0 && errno != ENOENT) {
+    VIR_DEBUG("Removing resctrl group %s", group->path);
+    if (rmdir(group->path) != 0 && errno != ENOENT) {
         ret = -errno;
-        VIR_ERROR(_("Unable to remove %s (%d)"), alloc->path, errno);
+        VIR_ERROR(_("Unable to remove %s (%d)"), group->path, errno);
     }
 
     return ret;
