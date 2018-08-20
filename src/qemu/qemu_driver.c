@@ -19618,6 +19618,198 @@ typedef enum {
 #define HAVE_JOB(flags) ((flags) & QEMU_DOMAIN_STATS_HAVE_JOB)
 
 
+/*
+ * qemuDomainVcpuFormatHelper
+ * For vcpu string, both '1-3' and '1,3' are valid format and
+ * representing different vcpu set, but it is not easy to
+ * differentiate them at first galance, to avoid this case
+ * substituting all '-' with ',', e.g. substitute string '1-3'
+ * with '1,2,3'.
+ */
+static int
+qemuDomainVcpuFormatHelper(char **pvcpus)
+{
+    size_t i = 0;
+    size_t j = 0;
+    size_t slen = 0;
+    char *vcpus = NULL;
+    char *strbuf = NULL;
+    virBuffer buf = VIR_BUFFER_INITIALIZER;
+
+    if (VIR_STRDUP(vcpus, *pvcpus))
+        return -1;
+
+    slen = strlen(vcpus);
+
+    /* Some checks to ensure algorithm runs smothly:
+     * the first and last char of 'vcpus' string should be a number */
+    if (*(vcpus + slen -1) < '0' ||  *(vcpus + slen -1) > '9')
+        goto error;
+    if (*vcpus < '0' ||  *vcpus > '9')
+        goto error;
+
+    for (i = 0; i < slen; i++) {
+        if (*(vcpus + i) != '-') {
+            virBufferAddChar(&buf, *(vcpus + i));
+        } else {
+            unsigned int cpul = 0;
+            unsigned int cpur = 0;
+            unsigned int icpu = 0;
+            char *tmp = NULL;
+
+            /* virStrToLong_ui is very tricking in processing '-'. to
+             * avoid to trigger error, replace '-' with '_' */
+            vcpus[i] = '_';
+
+            /* Detect the numbers on the left */
+            j = i - 1;
+            while (j &&
+                   *(vcpus + j) >= '0' &&
+                   *(vcpus + j) <= '9')
+                j--;
+            j++;
+
+            if (virStrToLong_ui(vcpus + j, &tmp, 10, &cpul) < 0)
+                goto error;
+            if (virStrToLong_ui(vcpus + i + 1, &tmp, 10, &cpur) < 0)
+                goto error;
+            if (cpur < cpul)
+                goto error;
+
+            for (icpu = cpul + 1; icpu <= cpur; icpu++) {
+                if (virAsprintf(&strbuf, "%d", icpu) < 0)
+                    goto error;
+                virBufferStrcat(&buf, strbuf, NULL);
+                if (icpu != cpur)
+                    virBufferAddChar(&buf, ',');
+               VIR_FREE(strbuf);
+            }
+        }
+    }
+
+    VIR_FREE(vcpus);
+    vcpus = virBufferContentAndReset(&buf);
+    VIR_FREE(*pvcpus);
+    *pvcpus = vcpus;
+    return 0;
+ error:
+    VIR_FREE(vcpus);
+    virBufferFreeAndReset(&buf);
+    return -1;
+}
+
+static int
+qemuDomainGetStatsCpuResource(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+                              virDomainObjPtr dom,
+                              virDomainStatsRecordPtr record,
+                              int *maxparams,
+                              unsigned int privflags ATTRIBUTE_UNUSED)
+{
+    size_t i = 0;
+    size_t j = 0;
+    char param_name[VIR_TYPED_PARAM_FIELD_LENGTH];
+    unsigned int nvals = 0;
+    unsigned int **ids = NULL;
+    unsigned int **vals = NULL;
+    char *vcpustr = NULL;
+    int ret = -1;
+
+    for (i = 0; i < dom->def->nresctrls; i++) {
+        virDomainResctrlDefPtr resctrl = dom->def->resctrls[i];
+
+        for (j = 0; j < resctrl->nmonitors; j++) {
+            virDomainResctrlMonitorPtr monitor = NULL;
+            size_t l = 0;
+            char *id = NULL;
+
+            monitor = resctrl->monitors[j];
+            id = monitor->id;
+
+            if (!(vcpustr = virBitmapFormat(monitor->vcpus)))
+                goto cleanup;
+
+            if (qemuDomainVcpuFormatHelper(&vcpustr) < 0)
+                goto cleanup;
+
+            switch ((virDomainResctrlMonType) monitor->type) {
+            case VIR_DOMAIN_RESCTRL_MONITOR_CACHE:
+            case VIR_DOMAIN_RESCTRL_MONITOR_CACHE_MEMBW:
+                if (virResctrlAllocGetCacheOccupancy(resctrl->alloc,
+                                                     id, &nvals,
+                                                     ids, vals) < 0)
+                    goto cleanup;
+
+                snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
+                         "cpu.cache.%ld.vcpus", i);
+                if (virTypedParamsAddString(&record->params,
+                                            &record->nparams,
+                                            maxparams,
+                                            param_name,
+                                            vcpustr) < 0)
+                    goto cleanup;
+
+                snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
+                         "cpu.cache.%ld.name", i);
+
+                if (virTypedParamsAddString(&record->params,
+                                            &record->nparams,
+                                            maxparams,
+                                            param_name,
+                                            monitor->id) < 0)
+                    goto cleanup;
+
+                snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
+                         "cpu.cache.%ld.bank.count", i);
+                if (virTypedParamsAddUInt(&record->params,
+                                          &record->nparams,
+                                          maxparams,
+                                          param_name,
+                                         nvals) < 0)
+                    goto cleanup;
+
+                for (l = 0; l < nvals; l++) {
+                    snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
+                             "cpu.cache.%ld.bank.%ld.id", i, l);
+                    if (virTypedParamsAddUInt(&record->params,
+                                              &record->nparams,
+                                              maxparams,
+                                              param_name,
+                                              *ids[l]) < 0)
+                        goto cleanup;
+
+
+                    snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
+                             "cpu.cache.%ld.bank.%ld.bytes", i, l);
+                    if (virTypedParamsAddUInt(&record->params,
+                                                &record->nparams,
+                                                maxparams,
+                                                param_name,
+                                                *vals[l]) < 0)
+                        goto cleanup;
+                }
+                break;
+
+            case VIR_DOMAIN_RESCTRL_MONITOR_MEMBW:
+            case VIR_DOMAIN_RESCTRL_MONITOR_LAST:
+            default:
+                break;
+            }
+
+            VIR_FREE(*ids);
+            VIR_FREE(*vals);
+            VIR_FREE(vcpustr);
+            nvals = 0;
+        }
+    }
+
+    ret = 0;
+ cleanup:
+    VIR_FREE(*ids);
+    VIR_FREE(*vals);
+    VIR_FREE(vcpustr);
+    return ret;
+}
+
 static int
 qemuDomainGetStatsCpu(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
                       virDomainObjPtr dom,
@@ -19654,6 +19846,10 @@ qemuDomainGetStatsCpu(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
                                         maxparams,
                                         "cpu.system",
                                         sys_time) < 0)
+        return -1;
+
+    if (qemuDomainGetStatsCpuResource(driver, dom,
+                                      record, maxparams, privflags) < 0)
         return -1;
 
     return 0;
