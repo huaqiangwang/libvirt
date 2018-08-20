@@ -2556,6 +2556,9 @@ qemuProcessResctrlCreate(virQEMUDriverPtr driver,
 {
     int ret = -1;
     size_t i = 0;
+    size_t j = 0;
+    char *vcpus = NULL;
+    char *id = NULL;
     virCapsPtr caps = NULL;
     qemuDomainObjPrivatePtr priv = vm->privateData;
 
@@ -2573,10 +2576,33 @@ qemuProcessResctrlCreate(virQEMUDriverPtr driver,
                                   vm->def->resctrls[i]->alloc,
                                   priv->machineName) < 0)
             goto cleanup;
+
+        /* Create resctrl monitoring groups associated with allocation */
+        for (j = 0; j < vm->def->resctrls[i]->nmonitors; j++) {
+            virDomainResctrlMonitorPtr monitor = NULL;
+            monitor = vm->def->resctrls[i]->monitors[j];
+
+            vcpus = virBitmapFormat(monitor->vcpus);
+            if (!vcpus)
+                goto cleanup;
+
+            if (virAsprintf(&id, "vcpus_%s", vcpus) < 0)
+                goto cleanup;
+
+            if (virResctrlAllocAddMonitor(caps->host.resctrl, vm->def->resctrls[i]->alloc,
+                                          priv->machineName,
+                                          id) < 0) goto cleanup;
+
+            VIR_FREE(vcpus);
+            VIR_FREE(id);
+        }
     }
 
+    id = NULL;
     ret = 0;
  cleanup:
+    VIR_FREE(vcpus);
+    VIR_FREE(id);
     virObjectUnref(caps);
     return ret;
 }
@@ -5382,7 +5408,9 @@ qemuProcessSetupVcpu(virDomainObjPtr vm,
 {
     pid_t vcpupid = qemuDomainGetVcpuPid(vm, vcpuid);
     virDomainVcpuDefPtr vcpu = virDomainDefGetVcpu(vm->def, vcpuid);
+    virDomainResctrlMonitorPtr mon = NULL;
     size_t i = 0;
+    size_t j = 0;
 
     if (qemuProcessSetupPid(vm, vcpupid, VIR_CGROUP_THREAD_VCPU,
                             vcpuid, vcpu->cpumask,
@@ -5397,7 +5425,15 @@ qemuProcessSetupVcpu(virDomainObjPtr vm,
         if (virBitmapIsBitSet(ct->vcpus, vcpuid)) {
             if (virResctrlAllocAddPID(ct->alloc, vcpupid) < 0)
                 return -1;
-            break;
+        }
+
+        for (j = 0; j < vm->def->resctrls[i]->nmonitors; j++) {
+            mon = vm->def->resctrls[i]->monitors[j];
+            if (virBitmapIsBitSet(mon->vcpus, vcpuid)) {
+                if (virResctrlAllocAddMonitorPID(ct->alloc,
+                                                 mon->id, vcpupid) < 0)
+                    return -1;
+            }
         }
     }
 
@@ -7637,10 +7673,12 @@ qemuProcessReconnect(void *opaque)
     int reason;
     virQEMUDriverConfigPtr cfg;
     size_t i;
+    size_t j;
     unsigned int stopFlags = 0;
     bool jobStarted = false;
     virCapsPtr caps = NULL;
     bool retry = true;
+    virDomainResctrlDefPtr resctrl = NULL;
 
     VIR_FREE(data);
 
@@ -7822,9 +7860,18 @@ qemuProcessReconnect(void *opaque)
         goto error;
 
     for (i = 0; i < obj->def->nresctrls; i++) {
-        if (virResctrlAllocDeterminePath(obj->def->resctrls[i]->alloc,
+        resctrl = obj->def->resctrls[i];
+
+        if (virResctrlAllocDeterminePath(resctrl->alloc,
                                          priv->machineName) < 0)
             goto error;
+
+        for (j = 0; j < resctrl->nmonitors; j++) {
+            if (virResctrlAllocDetermineMonitorPath(resctrl->alloc,
+                                                    resctrl->monitors[j]->id,
+                                                    priv->machineName) < 0)
+                goto error;
+        }
     }
 
     /* update domain state XML with possibly updated state in virDomainObj */
