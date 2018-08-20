@@ -1626,6 +1626,9 @@ virCapsHostCacheBankFree(virCapsHostCacheBankPtr ptr)
     virBitmapFree(ptr->cpus);
     for (i = 0; i < ptr->ncontrols; i++)
         VIR_FREE(ptr->controls[i]);
+    if (ptr->monitor)
+        virStringListFree(ptr->monitor->features);
+    VIR_FREE(ptr->monitor);
     VIR_FREE(ptr->controls);
     VIR_FREE(ptr);
 }
@@ -1801,7 +1804,8 @@ virCapabilitiesInitCaches(virCapsPtr caps)
                                            bank->level,
                                            bank->size,
                                            &bank->ncontrols,
-                                           &bank->controls) < 0)
+                                           &bank->controls,
+                                           &bank->monitor) < 0)
                     goto cleanup;
 
                 if (VIR_APPEND_ELEMENT(caps->host.caches,

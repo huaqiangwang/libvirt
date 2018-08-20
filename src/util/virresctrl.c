@@ -146,6 +146,8 @@ struct _virResctrlInfo {
     size_t nlevels;
 
     virResctrlInfoMemBWPtr membw_info;
+
+    virResctrlInfoMonPtr monitor_info;
 };
 
 
@@ -171,6 +173,9 @@ virResctrlInfoDispose(void *obj)
         VIR_FREE(level);
     }
 
+    if (resctrl->monitor_info)
+        virStringListFree(resctrl->monitor_info->features);
+    VIR_FREE(resctrl->monitor_info);
     VIR_FREE(resctrl->membw_info);
     VIR_FREE(resctrl->levels);
 }
@@ -556,6 +561,87 @@ virResctrlGetMemoryBandwidthInfo(virResctrlInfoPtr resctrl)
 
 
 static int
+virResctrlGetMonitorInfo(virResctrlInfoPtr resctrl)
+{
+    int rv = -1;
+    char *featurestr = NULL;
+    char **lines = NULL;
+    size_t nlines = 0;
+    size_t i = 0;
+    int ret = -1;
+    virResctrlInfoMonPtr info = NULL;
+
+    if (VIR_ALLOC(info) < 0)
+        return -1;
+
+    rv = virFileReadValueUint(&info->max_allocation,
+                              SYSFS_RESCTRL_PATH "/info/L3_MON/num_rmids");
+    if (rv == -2) {
+        /* The file doesn't exist, so it's unusable for us,
+         * probably resource monitoring feature unsupported */
+        VIR_WARN("The path '" SYSFS_RESCTRL_PATH "/info/L3_MON/num_rmids' "
+                 "does not exist");
+
+        ret = 0;
+        goto cleanup;
+    } else if (rv < 0) {
+        /* Other failures are fatal, so just quit */
+        goto cleanup;
+    }
+
+    rv = virFileReadValueUint(&info->cache_threshold,
+                              SYSFS_RESCTRL_PATH
+                              "/info/L3_MON/max_threshold_occupancy");
+
+    if (rv == -2) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Cannot get max_threshold_occupancy from resctrl"
+                         " info"));
+    }
+    if (rv < 0)
+        goto cleanup;
+
+    rv = virFileReadValueString(&featurestr,
+                                SYSFS_RESCTRL_PATH
+                                "/info/L3_MON/mon_features");
+    if (rv == -2)
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Cannot get mon_features from resctrl info"));
+    if (rv < 0)
+        goto cleanup;
+
+    lines = virStringSplitCount(featurestr, "\n", 0, &nlines);
+
+    for (i = 0; i < nlines; i++) {
+        size_t count = 0;
+
+        if (!STREQLEN(lines[i], "llc_", strlen("llc_")) ||
+            !STREQLEN(lines[i], "mbm_", strlen("mbm_"))) {
+            count = info->nfeatures;
+            if (VIR_EXPAND_N(info->features, count, 1) < 0)
+                goto cleanup;
+            info->nfeatures = count;
+
+            if (VIR_STRDUP(info->features[count - 1], lines[i]) < 0)
+                goto cleanup;
+        }
+    }
+
+    VIR_FREE(featurestr);
+    virStringListFree(lines);
+    resctrl->monitor_info = info;
+    return 0;
+
+ cleanup:
+    VIR_FREE(featurestr);
+    virStringListFree(lines);
+    virStringListFree(info->features);
+    VIR_FREE(info);
+    return ret;
+}
+
+
+static int
 virResctrlGetInfo(virResctrlInfoPtr resctrl)
 {
     DIR *dirp = NULL;
@@ -566,6 +652,10 @@ virResctrlGetInfo(virResctrlInfoPtr resctrl)
         goto cleanup;
 
     ret = virResctrlGetMemoryBandwidthInfo(resctrl);
+    if (ret < 0)
+        goto cleanup;
+
+    ret = virResctrlGetMonitorInfo(resctrl);
     if (ret < 0)
         goto cleanup;
 
@@ -654,15 +744,20 @@ virResctrlInfoGetCache(virResctrlInfoPtr resctrl,
                        unsigned int level,
                        unsigned long long size,
                        size_t *ncontrols,
-                       virResctrlInfoPerCachePtr **controls)
+                       virResctrlInfoPerCachePtr **controls,
+                       virResctrlInfoMonPtr *monitor)
 {
     virResctrlInfoPerLevelPtr i_level = NULL;
     virResctrlInfoPerTypePtr i_type = NULL;
+    virResctrlInfoMonPtr cachemon = NULL;
     size_t i = 0;
     int ret = -1;
 
     if (virResctrlInfoIsEmpty(resctrl))
         return 0;
+
+    if (VIR_ALLOC(cachemon) < 0)
+        return -1;
 
     /* Let's take the opportunity to update the number of last level
      * cache. This number of memory bandwidth controller is same with
@@ -716,14 +811,40 @@ virResctrlInfoGetCache(virResctrlInfoPtr resctrl,
         memcpy((*controls)[*ncontrols - 1], &i_type->control, sizeof(i_type->control));
     }
 
-    ret = 0;
- cleanup:
-    return ret;
+    cachemon->max_allocation = 0;
+    cachemon->nfeatures = 0;
+
+    if (resctrl->monitor_info) {
+        size_t count = 0;
+        virResctrlInfoMonPtr info = resctrl->monitor_info;
+
+        cachemon->max_allocation = info->max_allocation;
+        cachemon->cache_threshold = info->cache_threshold;
+        for (i = 0; i < info->nfeatures; i++) {
+            /* Only cares about last level cache */
+            if (!STREQLEN(info->features[i], "llc_", strlen("llc_"))) {
+                count = cachemon->nfeatures;
+                if (VIR_EXPAND_N(cachemon->features, count, 1) < 0)
+                    goto error;
+                cachemon->nfeatures = count;
+
+                if (VIR_STRDUP(cachemon->features[count - 1],
+                               info->features[i]) < 0)
+                    goto error;
+            }
+        }
+    }
+
+    *monitor = cachemon;
+
+    return 0;
  error:
     while (*ncontrols)
         VIR_FREE((*controls)[--*ncontrols]);
     VIR_FREE(*controls);
-    goto cleanup;
+    virStringListFree(cachemon->features);
+    VIR_FREE(cachemon);
+    return ret;
 }
 
 

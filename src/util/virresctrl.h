@@ -61,6 +61,19 @@ struct _virResctrlInfoMemBWPerNode {
     unsigned int max_allocation;
 };
 
+typedef struct _virResctrlInfoMon virResctrlInfoMon;
+typedef virResctrlInfoMon *virResctrlInfoMonPtr;
+/* Information about resource monitoring group */
+struct _virResctrlInfoMon {
+    /* feature list supported */
+    char **features;
+    size_t nfeatures;
+    /* Maximum number of simultaneous allocations */
+    unsigned int max_allocation;
+    /* determines the occupancy at which an RMID can be freed */
+    unsigned int cache_threshold;
+};
+
 typedef struct _virResctrlInfo virResctrlInfo;
 typedef virResctrlInfo *virResctrlInfoPtr;
 
@@ -72,7 +85,9 @@ virResctrlInfoGetCache(virResctrlInfoPtr resctrl,
                        unsigned int level,
                        unsigned long long size,
                        size_t *ncontrols,
-                       virResctrlInfoPerCachePtr **controls);
+                       virResctrlInfoPerCachePtr **controls,
+                       virResctrlInfoMonPtr *monitor);
+
 
 int
 virResctrlInfoGetMemoryBandwidth(virResctrlInfoPtr resctrl,

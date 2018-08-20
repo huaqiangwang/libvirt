@@ -149,6 +149,7 @@ struct _virCapsHostCacheBank {
     virBitmapPtr cpus;  /* All CPUs that share this bank */
     size_t ncontrols;
     virResctrlInfoPerCachePtr *controls;
+    virResctrlInfoMonPtr monitor;
 };
 
 typedef struct _virCapsHostMemBWNode virCapsHostMemBWNode;
