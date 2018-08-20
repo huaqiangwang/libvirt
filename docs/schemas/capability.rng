@@ -314,6 +314,24 @@
               </attribute>
             </element>
           </zeroOrMore>
+          <zeroOrMore>
+            <element name='monitor'>
+              <attribute name='threshold'>
+                <ref name='unsignedInt'/>
+              </attribute>
+              <attribute name='unit'>
+                <ref name='unit'/>
+              </attribute>
+              <attribute name='maxAllocs'>
+                <ref name='unsignedInt'/>
+              </attribute>
+              <zeroOrMore>
+                <element name='feature'>
+                  <ref name='monitorFeature'/>
+                </element>
+              </zeroOrMore>
+            </element>
+          </zeroOrMore>
         </element>
       </oneOrMore>
     </element>
@@ -325,6 +343,16 @@
         <value>both</value>
         <value>code</value>
         <value>data</value>
+      </choice>
+    </attribute>
+  </define>
+
+  <define name='monitorFeature'>
+    <attribute name='name'>
+      <choice>
+        <value>llc_occupancy</value>
+        <value>mbm_total_bytes</value>
+        <value>mbm_local_bytes</value>
       </choice>
     </attribute>
   </define>
