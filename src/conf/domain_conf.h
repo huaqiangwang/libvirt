@@ -2235,12 +2235,31 @@ struct _virDomainCputune {
 };
 
 
+typedef enum {
+    VIR_DOMAIN_RESCTRL_MONITOR_CACHE,
+    VIR_DOMAIN_RESCTRL_MONITOR_MEMBW,
+    VIR_DOMAIN_RESCTRL_MONITOR_CACHE_MEMBW,
+
+    VIR_DOMAIN_RESCTRL_MONITOR_LAST
+} virDomainResctrlMonType;
+
+typedef struct _virDomainResctrlMonitor  virDomainResctrlMonitor;
+typedef virDomainResctrlMonitor  *virDomainResctrlMonitorPtr;
+struct _virDomainResctrlMonitor {
+    int type; /* virDomainResctrlMonType*/
+    char *id;
+    virBitmapPtr vcpus;
+};
+
+
 typedef struct _virDomainResctrlDef virDomainResctrlDef;
 typedef virDomainResctrlDef *virDomainResctrlDefPtr;
 
 struct _virDomainResctrlDef {
     virBitmapPtr vcpus;
     virResctrlAllocPtr alloc;
+    virDomainResctrlMonitorPtr *monitors;
+    size_t nmonitors;
 };
 
 
@@ -3448,6 +3467,7 @@ VIR_ENUM_DECL(virDomainIOMMUModel)
 VIR_ENUM_DECL(virDomainVsockModel)
 VIR_ENUM_DECL(virDomainShmemModel)
 VIR_ENUM_DECL(virDomainLaunchSecurity)
+VIR_ENUM_DECL(virDomainResctrlMonType)
 /* from libvirt.h */
 VIR_ENUM_DECL(virDomainState)
 VIR_ENUM_DECL(virDomainNostateReason)
