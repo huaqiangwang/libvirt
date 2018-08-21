@@ -257,6 +257,19 @@ struct _virResctrlAllocMemBW {
     size_t nbandwidths;
 };
 
+
+typedef struct _virResctrlAllocMon virResctrlAllocMon;
+typedef virResctrlAllocMon *virResctrlAllocMonPtr;
+/* virResctrlAllocMon denotes a resctrl monitoring group reporting the resource
+ * consumption information for resource of either cache or memory
+ * bandwidth. */
+struct _virResctrlAllocMon {
+    /* monitoring group identifier, should be unique in scope of allocation */
+    char *id;
+    /* directory path under /sys/fs/resctrl*/
+    char *path;
+};
+
 struct _virResctrlAlloc {
     virObject parent;
 
@@ -264,6 +277,12 @@ struct _virResctrlAlloc {
     size_t nlevels;
 
     virResctrlAllocMemBWPtr mem_bw;
+
+    /* monintoring groups associated with current resource allocation
+     * it might report resource consumption information at a finer
+     * granularity */
+    virResctrlAllocMonPtr *monitors;
+    size_t nmonitors;
 
     /* The identifier (any unique string for now) */
     char *id;
@@ -313,6 +332,13 @@ virResctrlAllocDispose(void *obj)
         for (i = 0; i < mem_bw->nbandwidths; i++)
             VIR_FREE(mem_bw->bandwidths[i]);
         VIR_FREE(alloc->mem_bw);
+    }
+
+    for (i = 0; i < alloc->nmonitors; i++) {
+        virResctrlAllocMonPtr monitor = alloc->monitors[i];
+        VIR_FREE(monitor->id);
+        VIR_FREE(monitor->path);
+        VIR_FREE(monitor);
     }
 
     VIR_FREE(alloc->id);
@@ -2136,6 +2162,7 @@ virResctrlAllocDeterminePath(virResctrlAllocPtr alloc,
                                    machinename, alloc->path);
 }
 
+
 static int
 virResctrlCreateGroup(virResctrlInfoPtr resctrl,
                       char *path)
@@ -2280,10 +2307,276 @@ virResctrlAllocRemove(virResctrlAllocPtr alloc)
         return 0;
 
     VIR_DEBUG("Removing resctrl allocation %s", alloc->path);
+
+    while (alloc->nmonitors > 0) {
+        ret = virResctrlAllocDeleteMonitor(alloc, alloc->monitors[0]->id);
+        if (ret < 0)
+            goto cleanup;
+    }
+
     if (rmdir(alloc->path) != 0 && errno != ENOENT) {
         ret = -errno;
         VIR_ERROR(_("Unable to remove %s (%d)"), alloc->path, errno);
     }
+
+    ret = 0;
+ cleanup:
+    return ret;
+}
+
+
+static int
+virResctrlAllocGetMonitor(virResctrlAllocPtr alloc,
+                          const char *id,
+                          virResctrlAllocMonPtr *monitor,
+                          size_t *pos)
+{
+    size_t i = 0;
+
+    if (!alloc || !id)
+        return -1;
+
+    for (i = 0; i < alloc->nmonitors; i++) {
+        if (alloc->monitors[i]->id &&
+            STRNEQ(id, (alloc->monitors[i])->id)) {
+            if (monitor)
+                *monitor = alloc->monitors[i];
+            if (pos)
+                *pos = i;
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+
+int
+virResctrlAllocDetermineMonitorPath(virResctrlAllocPtr alloc,
+                                    const char *id,
+                                    const char *machinename)
+{
+    virResctrlAllocMonPtr monitor = NULL;
+
+    if (virResctrlAllocGetMonitor(alloc, id, &monitor, NULL) < 0)
+        return -1;
+
+
+    return virResctrlDeterminePath(monitor->id,
+                                   alloc->path,
+                                   "mon_groups",
+                                   machinename,
+                                   monitor->path);
+}
+
+
+int
+virResctrlAllocAddMonitorPID(virResctrlAllocPtr alloc,
+                             const char *id,
+                             pid_t pid)
+{
+    virResctrlAllocMonPtr monitor = NULL;
+
+    if (virResctrlAllocGetMonitor(alloc, id, &monitor, NULL) < 0)
+        return -1;
+
+    return virResctrlAddPID(monitor->path, pid);
+}
+
+
+int
+virResctrlAllocAddMonitor(virResctrlInfoPtr resctrl,
+                          virResctrlAllocPtr alloc,
+                          const char *machinename,
+                          const char *id)
+{
+    int ret = - 1;
+    virResctrlAllocMonPtr monitor = NULL;
+
+    if (!alloc)
+        return - 1;
+
+    if (VIR_ALLOC(monitor) < 0)
+        return -1;
+
+    monitor->id = (char*) id;
+
+    VIR_DEBUG("Adding resctrl monitor %s", monitor->path);
+    if (virResctrlAllocDetermineMonitorPath(alloc, id, machinename) < 0)
+        goto cleanup;
+
+    if (virResctrlCreateGroup(resctrl, monitor->path) < 0)
+        goto cleanup;
+
+    if (VIR_APPEND_ELEMENT(alloc->monitors, alloc->nmonitors, monitor) < 0)
+        goto cleanup;
+
+    ret = 0;
+ cleanup:
+    return ret;
+}
+
+
+
+int
+virResctrlAllocDeleteMonitor(virResctrlAllocPtr alloc,
+                             const char *id)
+{
+    int ret = 0;
+
+    virResctrlAllocMonPtr monitor = NULL;
+    size_t pos = 0;
+
+    if (virResctrlAllocGetMonitor(alloc, id, &monitor, &pos) < 0)
+        return -1;
+
+    VIR_DELETE_ELEMENT(alloc->monitors, pos, alloc->nmonitors);
+
+    VIR_DEBUG("Deleting resctrl monitor %s  ", monitor->path);
+    if (rmdir(monitor->path) != 0 && errno != ENOENT) {
+        ret = -errno;
+        VIR_ERROR(_("Unable to remove %s (%d)"), monitor->path, errno);
+    }
+
+    VIR_FREE(monitor->id);
+    VIR_FREE(monitor->path);
+    VIR_FREE(monitor);
+    return ret;
+}
+
+
+static int
+virResctrlAllocGetStatistic(virResctrlAllocPtr alloc,
+                            const char *id,
+                            const char *resfile,
+                            unsigned int *nnodes,
+                            unsigned int **nodeids,
+                            unsigned int **nodevals)
+{
+    DIR *dirp = NULL;
+    int ret = -1;
+    int rv = -1;
+    struct dirent *ent = NULL;
+    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    char *mondatapath = NULL;
+    size_t ntmpid = 0;
+    size_t ntmpval = 0;
+    virResctrlAllocMonPtr monitor = NULL;
+
+    if (!nnodes || !nodeids || !nodevals)
+        return -1;
+
+    if (virResctrlAllocGetMonitor(alloc, id, &monitor, NULL) < 0)
+        goto cleanup;
+
+    if (!monitor || !monitor->path)
+        goto cleanup;
+
+    rv = virDirOpenIfExists(&dirp, monitor->path);
+    if (rv <= 0)
+        goto cleanup;
+
+    virBufferAsprintf(&buf, "%s/mon_data", monitor->path);
+
+    mondatapath = virBufferContentAndReset(&buf);
+    if (!mondatapath)
+        goto cleanup;
+
+    if (virDirOpen(&dirp, mondatapath) < 0)
+        goto cleanup;
+
+    while ((rv = virDirRead(dirp, &ent, mondatapath)) > 0) {
+        char *pstrid = NULL;
+        size_t i = 0;
+        unsigned int len = 0;
+        unsigned int counter = 0;
+        unsigned int cacheid = 0;
+        unsigned int val = 0;
+        int tmpnodeid = 0;
+        int tmpnodeval = 0;
+
+        if (ent->d_type != DT_DIR)
+            continue;
+
+        /* mon_L3_xx  */
+        if (STRNEQLEN(ent->d_name, "mon_L", 5))
+            continue;
+
+        len = strlen(ent->d_name);
+        pstrid = ent->d_name;
+        for (i = 0; i < len; i++) {
+            if (*(pstrid + i) == '_')
+                counter ++;
+            if (counter == 2)
+                break;
+        }
+        i++;
+
+        if (i >= len)
+            goto cleanup;
+
+        if (virStrToLong_uip(pstrid + i, NULL, 0, &cacheid) < 0) {
+            VIR_DEBUG("Cannot parse id from folder '%s'", ent->d_name);
+            goto cleanup;
+        }
+
+        rv = virFileReadValueUint(&val,
+                                  "%s/%s/%s",
+                                  mondatapath, ent->d_name, resfile);
+
+        if (rv == -2) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("file %s/%s/%s does not exist"),
+                           mondatapath, ent->d_name, resfile);
+            goto cleanup;
+        } else {
+            if (rv < 0)
+                goto cleanup;
+        }
+
+        /* The ultimate caller will be responiblefor free memory of
+         * 'nodeids' an 'nodevals' */
+        if (VIR_APPEND_ELEMENT(*nodeids, ntmpid, cacheid) < 0)
+            goto cleanup;
+        if (VIR_APPEND_ELEMENT(*nodevals, ntmpval, val) < 0)
+            goto cleanup;
+
+        /* sort the 'nodeids' in ascending order */
+        for (i = 0; i < *nnodes; i++) {
+            if (nodeids[*nnodes + 1] < nodeids[i])  {
+                tmpnodeid = (*nodeids)[*nnodes + 1];
+                tmpnodeval = (*nodevals)[*nnodes + 1];
+                (*nodeids)[*nnodes + 1] = (*nodeids)[i];
+                (*nodevals)[*nnodes + 1] = (*nodevals)[i];
+                (*nodeids)[i] = tmpnodeid;
+                (*nodevals)[i] = tmpnodeval;
+            }
+        }
+
+        (*nnodes)++;
+        VIR_ERROR(_("Unable to remove %s (%d)"), monitor->path, errno);
+    }
+
+    ret = 0;
+ cleanup:
+    VIR_FREE(mondatapath);
+    VIR_DIR_CLOSE(dirp);
+    VIR_FREE(monitor);
+    return ret;
+}
+
+
+int
+virResctrlAllocGetCacheOccupancy(virResctrlAllocPtr alloc,
+                                 const char *id,
+                                 unsigned int *nbank,
+                                 unsigned int **bankids,
+                                 unsigned int **bankcaches)
+{
+    int ret = - 1;
+
+    ret = virResctrlAllocGetStatistic(alloc, id, "llc_occupancy",
+                                      nbank, bankids, bankcaches);
 
     return ret;
 }

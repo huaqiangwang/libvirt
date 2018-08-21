@@ -2644,12 +2644,17 @@ virCacheKernelTypeFromString;
 virCacheKernelTypeToString;
 virCacheTypeFromString;
 virCacheTypeToString;
+virResctrlAllocAddMonitor;
+virResctrlAllocAddMonitorPID;
 virResctrlAllocAddPID;
 virResctrlAllocCreate;
+virResctrlAllocDeleteMonitor;
+virResctrlAllocDetermineMonitorPath;
 virResctrlAllocDeterminePath;
 virResctrlAllocForeachCache;
 virResctrlAllocForeachMemory;
 virResctrlAllocFormat;
+virResctrlAllocGetCacheOccupancy;
 virResctrlAllocGetID;
 virResctrlAllocGetUnused;
 virResctrlAllocNew;
@@ -2659,6 +2664,7 @@ virResctrlAllocSetID;
 virResctrlAllocSetMemoryBandwidth;
 virResctrlInfoGetCache;
 virResctrlInfoNew;
+
 
 
 # util/virrotatingfile.h
