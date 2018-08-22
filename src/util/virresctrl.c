@@ -292,7 +292,7 @@ struct _virResctrlAlloc {
     /* is this a default resctrl group?
      * true : default group, directory path equals '/sys/fs/resctrl'
      * false: non-default group */
-    bool default;
+    bool default_group;
 };
 
 
@@ -892,7 +892,7 @@ virResctrlAllocNew(void)
         return NULL;
 
     /* By default, a resource group is a default group */
-    ret->default = true;
+    ret->default_group = true;
 
     return ret;
 }
@@ -2170,8 +2170,8 @@ int
 virResctrlAllocDeterminePath(virResctrlAllocPtr alloc,
                              const char *machinename)
 {
-    if (alloc->default) {
-        if (virAsprintf(&path, "%s", SYSFS_RESCTRL_PATH) < 0)
+    if (alloc->default_group) {
+        if (VIR_STRDUP(alloc->path, SYSFS_RESCTRL_PATH) < 0)
             return -1;
         return 0;
     } else {
@@ -2231,16 +2231,16 @@ virResctrlCreateGroup(virResctrlInfoPtr resctrl,
 static int
 virResctrlAllocCheckDefault(virResctrlAllocPtr alloc)
 {
-    bool default = true;
+    bool default_group = true;
     if (!alloc)
         return -1;
 
     if (alloc->nlevels)
-        default = false;
+        default_group = false;
     if (alloc->mem_bw && alloc->mem_bw->nbandwidths)
-        default = false;
+        default_group = false;
 
-    alloc->default = default;
+    alloc->default_group = default_group;
     return 0;
 }
 
@@ -2266,8 +2266,6 @@ virResctrlAllocCreate(virResctrlInfoPtr resctrl,
 
     if (virResctrlCreateGroup(resctrl, alloc->path) < 0)
         return -1;
-
-    alloc->default = false;
 
     lockfd = virResctrlLockWrite();
     if (lockfd < 0)
