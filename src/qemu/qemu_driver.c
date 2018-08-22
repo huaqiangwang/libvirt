@@ -19708,17 +19708,39 @@ qemuDomainGetStatsCpuResource(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
     size_t i = 0;
     size_t j = 0;
     char param_name[VIR_TYPED_PARAM_FIELD_LENGTH];
+    virDomainResctrlDefPtr resctrl = NULL;
+    virDomainResctrlMonitorPtr monitor = NULL;
     unsigned int nvals = 0;
     unsigned int **ids = NULL;
     unsigned int **vals = NULL;
+    unsigned int nmonitor = NULL;
     char *vcpustr = NULL;
     int ret = -1;
 
     for (i = 0; i < dom->def->nresctrls; i++) {
-        virDomainResctrlDefPtr resctrl = dom->def->resctrls[i];
+        resctrl = dom->def->resctrls[i];
 
         for (j = 0; j < resctrl->nmonitors; j++) {
-            virDomainResctrlMonitorPtr monitor = NULL;
+            monitor = resctrl->monitors[j];
+            if (monitor->vcpus)
+                nmonitor++;
+        }
+    }
+
+    snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
+             "cpu.cache.monitor.count");
+    if (virTypedParamsAddUInt(&record->params,
+                              &record->nparams,
+                              maxparams,
+                              param_name,
+                              nmonitor) < 0)
+        goto cleanup;
+
+
+    for (i = 0; i < dom->def->nresctrls; i++) {
+        resctrl = dom->def->resctrls[i];
+
+        for (j = 0; j < resctrl->nmonitors; j++) {
             size_t l = 0;
             char *id = NULL;
 
@@ -19731,21 +19753,16 @@ qemuDomainGetStatsCpuResource(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
             if (qemuDomainVcpuFormatHelper(&vcpustr) < 0)
                 goto cleanup;
 
+
             switch ((virDomainResctrlMonType) monitor->type) {
             case VIR_DOMAIN_RESCTRL_MONITOR_CACHE:
             case VIR_DOMAIN_RESCTRL_MONITOR_CACHE_MEMBW:
+                if (!monitor->vcpus)
+                    continue;
+
                 if (virResctrlAllocGetCacheOccupancy(resctrl->alloc,
                                                      id, &nvals,
                                                      ids, vals) < 0)
-                    goto cleanup;
-
-                snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
-                         "cpu.cache.%ld.vcpus", i);
-                if (virTypedParamsAddString(&record->params,
-                                            &record->nparams,
-                                            maxparams,
-                                            param_name,
-                                            vcpustr) < 0)
                     goto cleanup;
 
                 snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
@@ -19759,12 +19776,21 @@ qemuDomainGetStatsCpuResource(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
                     goto cleanup;
 
                 snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
+                         "cpu.cache.%ld.vcpus", i);
+                if (virTypedParamsAddString(&record->params,
+                                            &record->nparams,
+                                            maxparams,
+                                            param_name,
+                                            vcpustr) < 0)
+                    goto cleanup;
+
+                snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
                          "cpu.cache.%ld.bank.count", i);
                 if (virTypedParamsAddUInt(&record->params,
                                           &record->nparams,
                                           maxparams,
                                           param_name,
-                                         nvals) < 0)
+                                          nvals) < 0)
                     goto cleanup;
 
                 for (l = 0; l < nvals; l++) {
@@ -19781,10 +19807,10 @@ qemuDomainGetStatsCpuResource(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
                     snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
                              "cpu.cache.%ld.bank.%ld.bytes", i, l);
                     if (virTypedParamsAddUInt(&record->params,
-                                                &record->nparams,
-                                                maxparams,
-                                                param_name,
-                                                *vals[l]) < 0)
+                                              &record->nparams,
+                                              maxparams,
+                                              param_name,
+                                              *vals[l]) < 0)
                         goto cleanup;
                 }
                 break;
