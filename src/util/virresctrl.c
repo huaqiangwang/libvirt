@@ -2384,7 +2384,7 @@ virResctrlAllocGetMonitor(virResctrlAllocPtr alloc,
 
     for (i = 0; i < alloc->nmonitors; i++) {
         if (alloc->monitors[i]->id &&
-            STRNEQ(id, (alloc->monitors[i])->id)) {
+            STREQ(id, (alloc->monitors[i])->id)) {
             if (monitor)
                 *monitor = alloc->monitors[i];
             if (pos)
