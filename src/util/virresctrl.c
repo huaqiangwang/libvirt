@@ -2134,7 +2134,7 @@ virResctrlAllocAssign(virResctrlInfoPtr resctrl,
 
 static int
 virResctrlDeterminePath(const char *id,
-                        const char *pparentpath,
+                        const char *root,
                         const char *parentpath,
                         const char *prefix,
                         char *path)
@@ -2148,7 +2148,7 @@ virResctrlDeterminePath(const char *id,
     if (!path)
         return -1;
 
-    if (!parentpath && !pparentpath) {
+    if (!parentpath && !root) {
         if (virAsprintf(&path, "%s/%s-%s",
                         SYSFS_RESCTRL_PATH, prefix, id) < 0)
             return -1;
@@ -2157,9 +2157,8 @@ virResctrlDeterminePath(const char *id,
                         SYSFS_RESCTRL_PATH, parentpath, prefix, id) < 0)
             return -1;
     } else {
-        if (virAsprintf(&path, "%s/%s/%s/%s-%s",
-                        SYSFS_RESCTRL_PATH,
-                        pparentpath, parentpath, prefix, id) < 0)
+        if (virAsprintf(&path, "%s/%s/%s-%s",
+                        root, parentpath, prefix, id) < 0)
             return -1;
     }
 
