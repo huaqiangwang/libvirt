@@ -289,6 +289,10 @@ struct _virResctrlAlloc {
     /* libvirt-generated path in /sys/fs/resctrl for this particular
      * allocation */
     char *path;
+    /* is this a default resctrl group?
+     * true : default group, directory path equals '/sys/fs/resctrl'
+     * false: non-default group */
+    bool default;
 };
 
 
@@ -878,10 +882,19 @@ virResctrlInfoGetCache(virResctrlInfoPtr resctrl,
 virResctrlAllocPtr
 virResctrlAllocNew(void)
 {
+    virResctrlAllocPtr ret = NULL;
+
     if (virResctrlInitialize() < 0)
         return NULL;
 
-    return virObjectNew(virResctrlAllocClass);
+    ret = virObjectNew(virResctrlAllocClass);
+    if (!ret)
+        return NULL;
+
+    /* By default, a resource group is a default group */
+    ret->default = true;
+
+    return ret;
 }
 
 
@@ -2158,8 +2171,14 @@ int
 virResctrlAllocDeterminePath(virResctrlAllocPtr alloc,
                              const char *machinename)
 {
-    return virResctrlDeterminePath(alloc->id, NULL, NULL,
-                                   machinename, alloc->path);
+    if (alloc->default) {
+        if (virAsprintf(&path, "%s", SYSFS_RESCTRL_PATH) < 0)
+            return -1;
+        return 0;
+    } else {
+        return virResctrlDeterminePath(alloc->id, NULL, NULL,
+                                       machinename, alloc->path);
+    }
 }
 
 
@@ -2178,6 +2197,9 @@ virResctrlCreateGroup(virResctrlInfoPtr resctrl,
                        _("Resource control is not supported on this host"));
         return -1;
     }
+
+    if (STREQ(path, SYSFS_RESCTRL_PATH))
+        return 0;
 
     if (virFileExists(path)) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
@@ -2201,6 +2223,27 @@ virResctrlCreateGroup(virResctrlInfoPtr resctrl,
     return ret;
 }
 
+ /* In case of no explicit requirement for allocating cache and memory
+  * bandwidth, set 'alloc->default' to 'true', then the monitoring
+  * group will be created under '/sys/fs/resctrl/mon_groups' in later
+  * invocation of virResctrlAllocCreate.
+  * Otherwise, set 'alloc->default' to false, create a new directory
+  * under '/sys/fs/resctrl/'. This is will cost a hardware 'COSID'.*/
+static int
+virResctrlAllocCheckDefault(virResctrlAllocPtr alloc)
+{
+    bool default = true;
+    if (!alloc)
+        return -1;
+
+    if (alloc->nlevels)
+        default = false;
+    if (alloc->mem_bw && alloc->mem_bw->nbandwidths)
+        default = false;
+
+    alloc->default = default;
+    return 0;
+}
 
 /* This checks if the directory for the alloc exists.  If not it tries to create
  * it and apply appropriate alloc settings. */
@@ -2217,11 +2260,15 @@ virResctrlAllocCreate(virResctrlInfoPtr resctrl,
     if (!alloc)
         return 0;
 
+    virResctrlAllocCheckDefault(alloc);
+
     if (virResctrlAllocDeterminePath(alloc, machinename) < 0)
         return -1;
 
     if (virResctrlCreateGroup(resctrl, alloc->path) < 0)
         return -1;
+
+    alloc->default = false;
 
     lockfd = virResctrlLockWrite();
     if (lockfd < 0)
@@ -2415,7 +2462,6 @@ virResctrlAllocAddMonitor(virResctrlInfoPtr resctrl,
  cleanup:
     return ret;
 }
-
 
 
 int
