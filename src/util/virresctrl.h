@@ -65,7 +65,7 @@ typedef struct _virResctrlInfoMon virResctrlInfoMon;
 typedef virResctrlInfoMon *virResctrlInfoMonPtr;
 /* Information about resource monitoring group */
 struct _virResctrlInfoMon {
-    /* feature list supported */
+    /* null-terminal string list for hw supported monitor feature */
     char **features;
     size_t nfeatures;
     /* Maximum number of simultaneous allocations */

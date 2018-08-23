@@ -345,6 +345,7 @@ virResctrlAllocDispose(void *obj)
         VIR_FREE(monitor);
     }
 
+    VIR_FREE(alloc->monitors);
     VIR_FREE(alloc->id);
     VIR_FREE(alloc->path);
     VIR_FREE(alloc->levels);
@@ -643,17 +644,11 @@ virResctrlGetMonitorInfo(virResctrlInfoPtr resctrl)
     lines = virStringSplitCount(featurestr, "\n", 0, &nlines);
 
     for (i = 0; i < nlines; i++) {
-        size_t count = 0;
-
-        if (!STREQLEN(lines[i], "llc_", strlen("llc_")) ||
-            !STREQLEN(lines[i], "mbm_", strlen("mbm_"))) {
-            count = info->nfeatures;
-            if (VIR_EXPAND_N(info->features, count, 1) < 0)
+        if (STREQLEN(lines[i], "llc_", strlen("llc_")) ||
+            STREQLEN(lines[i], "mbm_", strlen("mbm_"))) {
+            if (virStringListAdd(&info->features, lines[i]) < 0)
                 goto cleanup;
-            info->nfeatures = count;
-
-            if (VIR_STRDUP(info->features[count - 1], lines[i]) < 0)
-                goto cleanup;
+            info->nfeatures++;
         }
     }
 
@@ -842,30 +837,26 @@ virResctrlInfoGetCache(virResctrlInfoPtr resctrl,
     }
 
     cachemon->max_allocation = 0;
-    cachemon->nfeatures = 0;
 
     if (resctrl->monitor_info) {
-        size_t count = 0;
         virResctrlInfoMonPtr info = resctrl->monitor_info;
 
         cachemon->max_allocation = info->max_allocation;
         cachemon->cache_threshold = info->cache_threshold;
+
         for (i = 0; i < info->nfeatures; i++) {
             /* Only cares about last level cache */
-            if (!STREQLEN(info->features[i], "llc_", strlen("llc_"))) {
-                count = cachemon->nfeatures;
-                if (VIR_EXPAND_N(cachemon->features, count, 1) < 0)
+            if (STREQLEN(info->features[i], "llc_", strlen("llc_"))) {
+                if (virStringListAdd(&cachemon->features,
+                                     info->features[i]) < 0)
                     goto error;
-                cachemon->nfeatures = count;
-
-                if (VIR_STRDUP(cachemon->features[count - 1],
-                               info->features[i]) < 0)
-                    goto error;
+                cachemon->nfeatures++;
             }
         }
     }
 
-    *monitor = cachemon;
+    if (cachemon->features)
+        *monitor = cachemon;
 
     return 0;
  error:

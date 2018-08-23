@@ -949,6 +949,7 @@ virCapabilitiesFormatCaches(virBufferPtr buf,
                               "maxAllocs='%u'>\n",
                               bank->monitor->cache_threshold,
                               bank->monitor->max_allocation);
+
             for (j = 0; j < bank->monitor->nfeatures; j++)
                 virBufferAsprintf(&childBuf,
                                   "<feature name='%s'/>\n",
@@ -1640,7 +1641,7 @@ virCapsHostCacheBankFree(virCapsHostCacheBankPtr ptr)
     virBitmapFree(ptr->cpus);
     for (i = 0; i < ptr->ncontrols; i++)
         VIR_FREE(ptr->controls[i]);
-    if (ptr->monitor)
+    if (ptr->monitor && ptr->monitor->features)
         virStringListFree(ptr->monitor->features);
     VIR_FREE(ptr->monitor);
     VIR_FREE(ptr->controls);
