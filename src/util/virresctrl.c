@@ -2530,6 +2530,8 @@ virResctrlAllocGetStatistic(virResctrlAllocPtr alloc,
     if (rv <= 0)
         goto cleanup;
 
+    *nnodes = 0;
+
     virBufferAsprintf(&buf, "%s/mon_data", monitor->path);
 
     mondatapath = virBufferContentAndReset(&buf);
@@ -2545,6 +2547,7 @@ virResctrlAllocGetStatistic(virResctrlAllocPtr alloc,
         unsigned int len = 0;
         unsigned int counter = 0;
         unsigned int cacheid = 0;
+        unsigned int cur_cacheid = 0;
         unsigned int val = 0;
         int tmpnodeid = 0;
         int tmpnodeval = 0;
@@ -2552,12 +2555,13 @@ virResctrlAllocGetStatistic(virResctrlAllocPtr alloc,
         if (ent->d_type != DT_DIR)
             continue;
 
-        /* mon_L3_xx  */
+        /* mon_L3(|CODE|DATA)_xx, xx is cache id */
         if (STRNEQLEN(ent->d_name, "mon_L", 5))
             continue;
 
         len = strlen(ent->d_name);
         pstrid = ent->d_name;
+        /* locating the cache id string: 'xx' */
         for (i = 0; i < len; i++) {
             if (*(pstrid + i) == '_')
                 counter ++;
@@ -2574,6 +2578,9 @@ virResctrlAllocGetStatistic(virResctrlAllocPtr alloc,
             goto cleanup;
         }
 
+        VIR_INFO("--------Check cache id :folder string:%s -->string %s -->Int:%d",
+                 ent->d_name,ent->d_name+i, cacheid);
+
         rv = virFileReadValueUint(&val,
                                   "%s/%s/%s",
                                   mondatapath, ent->d_name, resfile);
@@ -2588,6 +2595,10 @@ virResctrlAllocGetStatistic(virResctrlAllocPtr alloc,
                 goto cleanup;
         }
 
+        VIR_INFO("-------occupancy cache id=%d: file %s/%s/%s val=%d",
+                 cacheid,
+                 mondatapath, ent->d_name, resfile, val);
+
         /* The ultimate caller will be responiblefor free memory of
          * 'nodeids' an 'nodevals' */
         if (VIR_APPEND_ELEMENT(*nodeids, ntmpid, cacheid) < 0)
@@ -2595,21 +2606,22 @@ virResctrlAllocGetStatistic(virResctrlAllocPtr alloc,
         if (VIR_APPEND_ELEMENT(*nodevals, ntmpval, val) < 0)
             goto cleanup;
 
-        /* sort the 'nodeids' in ascending order */
-        for (i = 0; i < *nnodes; i++) {
-            if (nodeids[*nnodes + 1] < nodeids[i])  {
-                tmpnodeid = (*nodeids)[*nnodes + 1];
-                tmpnodeval = (*nodevals)[*nnodes + 1];
-                (*nodeids)[*nnodes + 1] = (*nodeids)[i];
-                (*nodevals)[*nnodes + 1] = (*nodevals)[i];
-                (*nodeids)[i] = tmpnodeid;
+        cur_cacheid = ntmpval - 1;
+        /* sort the cache information in caach bank id's ascending order */
+        for (i = 0; i < cur_cacheid; i++) {
+            if ((*nodeids)[cur_cacheid] < (*nodeids)[i]) {
+                tmpnodeid  = (*nodeids)[cur_cacheid];
+                tmpnodeval = (*nodevals)[cur_cacheid];
+                (*nodeids)[cur_cacheid]  = (*nodeids)[i];
+                (*nodevals)[cur_cacheid] = (*nodevals)[i];
+                (*nodeids)[i]  = tmpnodeid;
                 (*nodevals)[i] = tmpnodeval;
             }
         }
 
-        (*nnodes)++;
     }
 
+    (*nnodes) = ntmpval;
     ret = 0;
  cleanup:
     VIR_FREE(mondatapath);
