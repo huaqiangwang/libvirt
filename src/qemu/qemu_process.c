@@ -2557,8 +2557,6 @@ qemuProcessResctrlCreate(virQEMUDriverPtr driver,
     int ret = -1;
     size_t i = 0;
     size_t j = 0;
-    char *vcpus = NULL;
-    char *id = NULL;
     virCapsPtr caps = NULL;
     qemuDomainObjPrivatePtr priv = vm->privateData;
 
@@ -2582,27 +2580,19 @@ qemuProcessResctrlCreate(virQEMUDriverPtr driver,
             virDomainResctrlMonitorPtr monitor = NULL;
             monitor = vm->def->resctrls[i]->monitors[j];
 
-            vcpus = virBitmapFormat(monitor->vcpus);
-            if (!vcpus)
+            VIR_INFO("qemuProcessResctrlCreate: Creating monitor: %s",
+                     monitor->id);
+            if (virResctrlAllocCreateMonitor(caps->host.resctrl,
+                                             vm->def->resctrls[i]->alloc,
+                                             priv->machineName,
+                                             monitor->id) < 0)
                 goto cleanup;
 
-            if (virAsprintf(&id, "vcpus_%s", vcpus) < 0)
-                goto cleanup;
-
-            if (virResctrlAllocAddMonitor(caps->host.resctrl, vm->def->resctrls[i]->alloc,
-                                          priv->machineName,
-                                          id) < 0) goto cleanup;
-
-            VIR_FREE(vcpus);
-            VIR_FREE(id);
         }
     }
 
-    id = NULL;
     ret = 0;
  cleanup:
-    VIR_FREE(vcpus);
-    VIR_FREE(id);
     virObjectUnref(caps);
     return ret;
 }

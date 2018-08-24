@@ -902,6 +902,9 @@ virResctrlAllocIsEmpty(virResctrlAllocPtr alloc)
     if (alloc->mem_bw)
         return false;
 
+    if (alloc->nmonitors)
+        return false;
+
     for (i = 0; i < alloc->nlevels; i++) {
         virResctrlAllocPerLevelPtr a_level = alloc->levels[i];
 
@@ -2128,7 +2131,7 @@ virResctrlDeterminePath(const char *id,
                         const char *root,
                         const char *parentpath,
                         const char *prefix,
-                        char *path)
+                        char **path)
 {
     if (!id) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -2136,19 +2139,23 @@ virResctrlDeterminePath(const char *id,
         return -1;
     }
 
-    if (!path)
+    if (*path) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Resctrl group (%s) already created, path=%s."),
+                      id, *path);
         return -1;
+    }
 
     if (!parentpath && !root) {
-        if (virAsprintf(&path, "%s/%s-%s",
+        if (virAsprintf(path, "%s/%s-%s",
                         SYSFS_RESCTRL_PATH, prefix, id) < 0)
             return -1;
     } else if (!parentpath) {
-        if (virAsprintf(&path, "%s/%s/%s-%s",
+        if (virAsprintf(path, "%s/%s/%s-%s",
                         SYSFS_RESCTRL_PATH, parentpath, prefix, id) < 0)
             return -1;
     } else {
-        if (virAsprintf(&path, "%s/%s/%s-%s",
+        if (virAsprintf(path, "%s/%s/%s-%s",
                         root, parentpath, prefix, id) < 0)
             return -1;
     }
@@ -2167,7 +2174,7 @@ virResctrlAllocDeterminePath(virResctrlAllocPtr alloc,
         return 0;
     } else {
         return virResctrlDeterminePath(alloc->id, NULL, NULL,
-                                       machinename, alloc->path);
+                                       machinename, &alloc->path);
     }
 }
 
@@ -2401,7 +2408,7 @@ virResctrlAllocDetermineMonitorPath(virResctrlAllocPtr alloc,
                                    alloc->path,
                                    "mon_groups",
                                    machinename,
-                                   monitor->path);
+                                   &monitor->path);
 }
 
 
@@ -2420,35 +2427,47 @@ virResctrlAllocAddMonitorPID(virResctrlAllocPtr alloc,
 
 
 int
-virResctrlAllocAddMonitor(virResctrlInfoPtr resctrl,
-                          virResctrlAllocPtr alloc,
-                          const char *machinename,
+virResctrlAllocSetMonitor(virResctrlAllocPtr alloc,
                           const char *id)
 {
-    int ret = - 1;
     virResctrlAllocMonPtr monitor = NULL;
 
-    if (!alloc)
+    if (!alloc || !id)
         return - 1;
 
-    if (VIR_ALLOC(monitor) < 0)
-        return -1;
+    if (virResctrlAllocGetMonitor(alloc, id, &monitor, NULL) < 0) {
+        if (VIR_ALLOC(monitor) < 0)
+            return -1;
+    }
 
     monitor->id = (char*) id;
 
-    VIR_DEBUG("Adding resctrl monitor %s", monitor->path);
-    if (virResctrlAllocDetermineMonitorPath(alloc, id, machinename) < 0)
-        goto cleanup;
-
-    if (virResctrlCreateGroup(resctrl, monitor->path) < 0)
-        goto cleanup;
-
     if (VIR_APPEND_ELEMENT(alloc->monitors, alloc->nmonitors, monitor) < 0)
-        goto cleanup;
+        return -1;
 
-    ret = 0;
- cleanup:
-    return ret;
+    return 0;
+}
+
+
+int
+virResctrlAllocCreateMonitor(virResctrlInfoPtr resctrl,
+                             virResctrlAllocPtr alloc,
+                             const char *machinename,
+                             const char *id)
+{
+    virResctrlAllocMonPtr monitor = NULL;
+
+    if (virResctrlAllocGetMonitor(alloc, id, &monitor, NULL) < 0)
+        return - 1;
+
+    if (virResctrlAllocDetermineMonitorPath(alloc, id, machinename) < 0)
+        return -1;
+
+    VIR_DEBUG("Creating resctrl monitor %s", monitor->path);
+    if (virResctrlCreateGroup(resctrl, monitor->path) < 0)
+        return -1;
+
+    return 0;
 }
 
 

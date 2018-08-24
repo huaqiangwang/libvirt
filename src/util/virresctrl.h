@@ -172,10 +172,14 @@ virResctrlAllocAddMonitorPID(virResctrlAllocPtr alloc,
                              pid_t pid);
 
 int
-virResctrlAllocAddMonitor(virResctrlInfoPtr resctrl,
-                          virResctrlAllocPtr alloc,
-                          const char *machinename,
+virResctrlAllocSetMonitor(virResctrlAllocPtr alloc,
                           const char *id);
+
+int
+virResctrlAllocCreateMonitor(virResctrlInfoPtr resctrl,
+                             virResctrlAllocPtr alloc,
+                             const char *machinename,
+                             const char *id);
 
 int
 virResctrlAllocDeleteMonitor(virResctrlAllocPtr alloc,
