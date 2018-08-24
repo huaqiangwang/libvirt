@@ -42,7 +42,6 @@
 #include <sys/un.h>
 #include <byteswap.h>
 
-
 #include "qemu_driver.h"
 #include "qemu_agent.h"
 #include "qemu_alias.h"
@@ -107,6 +106,7 @@
 #include "virnuma.h"
 #include "dirname.h"
 #include "netdev_bandwidth_conf.h"
+#include "c-ctype.h"
 
 #define VIR_FROM_THIS VIR_FROM_QEMU
 
@@ -19627,73 +19627,78 @@ typedef enum {
  * with '1,2,3'.
  */
 static int
-qemuDomainVcpuFormatHelper(char **pvcpus)
+qemuDomainVcpuFormatHelper(char **vcpus)
 {
+    const char *cur = NULL;
     size_t i = 0;
-    size_t j = 0;
-    size_t slen = 0;
-    char *vcpus = NULL;
-    char *strbuf = NULL;
+    char *tmp = NULL;
+    int start, last;
     virBuffer buf = VIR_BUFFER_INITIALIZER;
+    bool firstnum = 1;
 
-    if (VIR_STRDUP(vcpus, *pvcpus))
-        return -1;
-
-    slen = strlen(vcpus);
-
-    /* Some checks to ensure algorithm runs smothly:
-     * the first and last char of 'vcpus' string should be a number */
-    if (*(vcpus + slen -1) < '0' ||  *(vcpus + slen -1) > '9')
-        goto error;
-    if (*vcpus < '0' ||  *vcpus > '9')
+    if (!*vcpus)
         goto error;
 
-    for (i = 0; i < slen; i++) {
-        if (*(vcpus + i) != '-') {
-            virBufferAddChar(&buf, *(vcpus + i));
-        } else {
-            unsigned int cpul = 0;
-            unsigned int cpur = 0;
-            unsigned int icpu = 0;
-            char *tmp = NULL;
+    cur = *vcpus;
 
-            /* virStrToLong_ui is very tricking in processing '-'. to
-             * avoid to trigger error, replace '-' with '_' */
-            vcpus[i] = '_';
+    virSkipSpaces(&cur);
 
-            /* Detect the numbers on the left */
-            j = i - 1;
-            while (j &&
-                   *(vcpus + j) >= '0' &&
-                   *(vcpus + j) <= '9')
-                j--;
-            j++;
+    if (*cur == '\0')
+        goto error;
 
-            if (virStrToLong_ui(vcpus + j, &tmp, 10, &cpul) < 0)
+    while (*cur != 0) {
+        if (!c_isdigit(*cur))
+            goto error;
+
+        if (virStrToLong_i(cur, &tmp, 10, &start) < 0)
+            goto error;
+        if (start < 0)
+            goto error;
+
+        cur = tmp;
+
+        virSkipSpaces(&cur);
+
+        if (*cur == ',' || *cur == 0) {
+            if (!firstnum)
+                virBufferAddChar(&buf, ',');
+            virBufferAsprintf(&buf, "%d", start);
+            firstnum = 0;
+        } else if (*cur == '-') {
+            cur++;
+            virSkipSpaces(&cur);
+
+            if (virStrToLong_i(cur, &tmp, 10, &last) < 0)
                 goto error;
-            if (virStrToLong_ui(vcpus + i + 1, &tmp, 10, &cpur) < 0)
-                goto error;
-            if (cpur < cpul)
+            if (last < start)
                 goto error;
 
-            for (icpu = cpul + 1; icpu <= cpur; icpu++) {
-                if (virAsprintf(&strbuf, "%d", icpu) < 0)
-                    goto error;
-                virBufferStrcat(&buf, strbuf, NULL);
-                if (icpu != cpur)
+            cur = tmp;
+
+            for (i = start; i <= last; i++) {
+                if (!firstnum)
                     virBufferAddChar(&buf, ',');
-               VIR_FREE(strbuf);
+                virBufferAsprintf(&buf, "%ld", i);
+                firstnum = 0;
             }
+
+            virSkipSpaces(&cur);
+        }
+
+        if (*cur == ',') {
+            cur++;
+            virSkipSpaces(&cur);
+        } else if (*cur == 0) {
+            break;
+        } else {
+            goto error;
         }
     }
 
-    VIR_FREE(vcpus);
-    vcpus = virBufferContentAndReset(&buf);
-    VIR_FREE(*pvcpus);
-    *pvcpus = vcpus;
+    VIR_FREE(*vcpus);
+    *vcpus = virBufferContentAndReset(&buf);
     return 0;
  error:
-    VIR_FREE(vcpus);
     virBufferFreeAndReset(&buf);
     return -1;
 }
@@ -19711,8 +19716,8 @@ qemuDomainGetStatsCpuResource(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
     virDomainResctrlDefPtr resctrl = NULL;
     virDomainResctrlMonitorPtr monitor = NULL;
     unsigned int nvals = 0;
-    unsigned int **ids = NULL;
-    unsigned int **vals = NULL;
+    unsigned int *ids = NULL;
+    unsigned int *vals = NULL;
     unsigned int nmonitor = NULL;
     char *vcpustr = NULL;
     int ret = -1;
@@ -19736,16 +19741,14 @@ qemuDomainGetStatsCpuResource(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
                               nmonitor) < 0)
         goto cleanup;
 
-
+    VIR_INFO("cpu status: nresctrls: %ld", dom->def->nresctrls);
     for (i = 0; i < dom->def->nresctrls; i++) {
         resctrl = dom->def->resctrls[i];
 
         for (j = 0; j < resctrl->nmonitors; j++) {
             size_t l = 0;
-            char *id = NULL;
 
             monitor = resctrl->monitors[j];
-            id = monitor->id;
 
             if (!(vcpustr = virBitmapFormat(monitor->vcpus)))
                 goto cleanup;
@@ -19753,17 +19756,22 @@ qemuDomainGetStatsCpuResource(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
             if (qemuDomainVcpuFormatHelper(&vcpustr) < 0)
                 goto cleanup;
 
-
             switch ((virDomainResctrlMonType) monitor->type) {
             case VIR_DOMAIN_RESCTRL_MONITOR_CACHE:
             case VIR_DOMAIN_RESCTRL_MONITOR_CACHE_MEMBW:
                 if (!monitor->vcpus)
                     continue;
 
+                VIR_INFO("monitor: id(%s)", monitor->id);
                 if (virResctrlAllocGetCacheOccupancy(resctrl->alloc,
-                                                     id, &nvals,
-                                                     ids, vals) < 0)
+                                                     monitor->id, &nvals,
+                                                     &ids, &vals) < 0)
                     goto cleanup;
+
+                VIR_INFO("Get occupancy: nvals=%d", nvals);
+                for (int t=0;t<nvals;t++){
+                    VIR_INFO("id: %d, val: %d", ids[t], vals[t]);
+                }
 
                 snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,
                          "cpu.cache.%ld.name", i);
@@ -19800,7 +19808,7 @@ qemuDomainGetStatsCpuResource(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
                                               &record->nparams,
                                               maxparams,
                                               param_name,
-                                              *ids[l]) < 0)
+                                              ids[l]) < 0)
                         goto cleanup;
 
 
@@ -19810,7 +19818,7 @@ qemuDomainGetStatsCpuResource(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
                                               &record->nparams,
                                               maxparams,
                                               param_name,
-                                              *vals[l]) < 0)
+                                              vals[l]) < 0)
                         goto cleanup;
                 }
                 break;
@@ -19821,17 +19829,18 @@ qemuDomainGetStatsCpuResource(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
                 break;
             }
 
-            VIR_FREE(*ids);
-            VIR_FREE(*vals);
+            VIR_FREE(ids);
+            VIR_FREE(vals);
             VIR_FREE(vcpustr);
             nvals = 0;
         }
     }
 
+    VIR_INFO("occupancy sucessful");
     ret = 0;
  cleanup:
-    VIR_FREE(*ids);
-    VIR_FREE(*vals);
+    VIR_FREE(ids);
+    VIR_FREE(vals);
     VIR_FREE(vcpustr);
     return ret;
 }
@@ -19849,6 +19858,11 @@ qemuDomainGetStatsCpu(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
     unsigned long long sys_time = 0;
     int err = 0;
 
+    if (qemuDomainGetStatsCpuResource(driver, dom,
+                                      record, maxparams, privflags) < 0)
+        return -1;
+
+    VIR_INFO("---------qemuDomainGetStatsCpuResource ok");
     if (!priv->cgroup)
         return 0;
 
@@ -19874,10 +19888,7 @@ qemuDomainGetStatsCpu(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
                                         sys_time) < 0)
         return -1;
 
-    if (qemuDomainGetStatsCpuResource(driver, dom,
-                                      record, maxparams, privflags) < 0)
-        return -1;
-
+    VIR_INFO("---------sucess");
     return 0;
 }
 

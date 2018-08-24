@@ -19330,7 +19330,9 @@ virDomainResctrlParseMonitor(virDomainDefPtr def,
     if (virAsprintf(&id, "vcpus_%s", vcpus_str) < 0)
         goto cleanup;
 
-    tmp_domresmon->id = id;
+    if (VIR_STRDUP(tmp_domresmon->id, id) < 0)
+        goto cleanup;
+
     tmp_domresmon->vcpus = vcpus;
 
     if (VIR_APPEND_ELEMENT(resctrl->monitors,
@@ -19347,6 +19349,7 @@ virDomainResctrlParseMonitor(virDomainDefPtr def,
     ret = 0;
  cleanup:
     ctxt->node = oldnode;
+    VIR_FREE(id);
     VIR_FREE(vcpus_str);
     virDomainResctrlMonFree(tmp_domresmon);
     return ret;

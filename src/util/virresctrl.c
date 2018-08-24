@@ -2428,7 +2428,7 @@ virResctrlAllocAddMonitorPID(virResctrlAllocPtr alloc,
 
 int
 virResctrlAllocSetMonitor(virResctrlAllocPtr alloc,
-                          const char *id)
+                          char *id)
 {
     virResctrlAllocMonPtr monitor = NULL;
 
@@ -2440,7 +2440,8 @@ virResctrlAllocSetMonitor(virResctrlAllocPtr alloc,
             return -1;
     }
 
-    monitor->id = (char*) id;
+    if (VIR_STRDUP(monitor->id, id) < 0)
+        return -1;
 
     if (VIR_APPEND_ELEMENT(alloc->monitors, alloc->nmonitors, monitor) < 0)
         return -1;
@@ -2607,14 +2608,12 @@ virResctrlAllocGetStatistic(virResctrlAllocPtr alloc,
         }
 
         (*nnodes)++;
-        VIR_ERROR(_("Unable to remove %s (%d)"), monitor->path, errno);
     }
 
     ret = 0;
  cleanup:
     VIR_FREE(mondatapath);
     VIR_DIR_CLOSE(dirp);
-    VIR_FREE(monitor);
     return ret;
 }
 

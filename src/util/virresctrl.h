@@ -173,7 +173,7 @@ virResctrlAllocAddMonitorPID(virResctrlAllocPtr alloc,
 
 int
 virResctrlAllocSetMonitor(virResctrlAllocPtr alloc,
-                          const char *id);
+                          char *id);
 
 int
 virResctrlAllocCreateMonitor(virResctrlInfoPtr resctrl,
