@@ -70,6 +70,18 @@ VIR_ENUM_IMPL(virResctrl, VIR_CACHE_TYPE_LAST,
               "CODE",
               "DATA")
 
+/* Monitor name mapping for monitor naming */
+VIR_ENUM_IMPL(virMonitor, VIR_MONITOR_TYPE_LAST,
+              "unsupported monitor",
+              "cache monitor",
+              "memory bandwidth monitor")
+
+/* Monitor feature name prefix mapping for monitor naming */
+VIR_ENUM_IMPL(virMonitorPrefix, VIR_MONITOR_TYPE_LAST,
+              "__unsupported__",
+              "llc_",
+              "mbm_")
+
 
 /* All private typedefs so that they exist for all later definitions.  This way
  * structs can be included in one or another without reorganizing the code every
@@ -204,6 +216,17 @@ virResctrlInfoDispose(void *obj)
     VIR_FREE(resctrl->membw_info);
     VIR_FREE(resctrl->levels);
     VIR_FREE(resctrl->monitor_info);
+}
+
+
+void
+virResctrlInfoMonFree(virResctrlInfoMonPtr mon)
+{
+    if (!mon)
+        return;
+
+    virStringListFree(mon->features);
+    VIR_FREE(mon);
 }
 
 
@@ -686,11 +709,11 @@ virResctrlGetInfo(virResctrlInfoPtr resctrl)
     if (ret < 0)
         goto cleanup;
 
-    ret = virResctrlGetCacheInfo(resctrl, dirp);
+    ret = virResctrlGetMonitorInfo(resctrl);
     if (ret < 0)
         goto cleanup;
 
-    ret = virResctrlGetMonitorInfo(resctrl);
+    ret = virResctrlGetCacheInfo(resctrl, dirp);
     if (ret < 0)
         goto cleanup;
 
@@ -848,6 +871,99 @@ virResctrlInfoGetCache(virResctrlInfoPtr resctrl,
         VIR_FREE((*controls)[--*ncontrols]);
     VIR_FREE(*controls);
     goto cleanup;
+}
+
+
+/* virResctrlInfoGetMonitorPrefix
+ *
+ * @resctrl: Pointer to virResctrlInfo
+ * @prefix: Monitor prefix name for monitor looking for.
+ * @monitor: Returns the capability inforamtion for taget monitor if the
+ * monitor with prefix name @prefex is supported by host.
+ *
+ * Return monitor capability information describe in prefix name @prefix
+ * through @monitor
+ *
+ * Returns 0 if a monitor is found or a valid monitor is not supported by host,
+ * -1 on failure with error message set.
+ * */
+int
+virResctrlInfoGetMonitorPrefix(virResctrlInfoPtr resctrl,
+                               const char *prefix,
+                               virResctrlInfoMonPtr *monitor)
+{
+    size_t i = 0;
+    virResctrlInfoMongrpPtr mongrp_info = NULL;
+    virResctrlInfoMonPtr mon = NULL;
+    int ret = -1;
+
+    if (virResctrlInfoIsEmpty(resctrl))
+        return 0;
+
+    mongrp_info = resctrl->monitor_info;
+
+    if (!mongrp_info) {
+        VIR_INFO("Monitor is not supported in host");
+        return 0;
+    }
+
+    if (!prefix) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Empty prefix name for resctrl monitor"));
+        return -1;
+    }
+
+    for (i = 0; i < VIR_MONITOR_TYPE_LAST; i++) {
+        if (STREQ(prefix, virMonitorPrefixTypeToString(i))) {
+            if (VIR_ALLOC(mon) < 0)
+                goto cleanup;
+            mon->type = i;
+            break;
+        }
+    }
+
+    if (!mon) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Bad prefix name \"%s\" for resctrl monitor"),
+                       prefix);
+        goto cleanup;
+    }
+
+    mon->max_monitor = mongrp_info->max_monitor;
+
+    if (mon->type == VIR_MONITOR_TYPE_CACHE) {
+        mon->cache_reuse_threshold =  mongrp_info->cache_reuse_threshold;
+        mon->cache_level =  mongrp_info->cache_level;
+    }
+
+    for (i = 0; i < mongrp_info->nfeatures; i++) {
+        if (STRPREFIX(mongrp_info->features[i], prefix)) {
+            if (virStringListAdd(&mon->features,
+                                 mongrp_info->features[i]) < 0)
+                goto cleanup;
+            mon->nfeatures++;
+        }
+    }
+
+    ret = 0;
+
+    if (mon->nfeatures == 0) {
+        /* No feature found for current monitor, means host does not support
+         * monitor type with @prefix name.
+         * Telling caller this monitor is supported by hardware specification,
+         * but not supported by this host */
+        VIR_INFO("%s is not supported by host",
+                 virMonitorTypeToString(mon->type));
+        goto cleanup;
+    }
+
+    /* In case *monitor is pointed to some monitor, clean it. */
+    VIR_FREE(*monitor);
+
+    VIR_STEAL_PTR(*monitor, mon);
+ cleanup:
+    virResctrlInfoMonFree(mon);
+    return ret;
 }
 
 
